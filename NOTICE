@@ -1,0 +1,8 @@
+kawaiidra-hx is a fresh project that borrows ideas (tool shapes, pagination, project-index
+parsing, test layout) from kawaiidra-mcp, which is distributed under the MIT License:
+
+    MIT License
+    Copyright (c) 2025 Kawaiidra Contributors
+
+Ghidra (https://ghidra-sre.org/) and PyGhidra are Apache-2.0 licensed software of the
+National Security Agency and are used as external dependencies; they are not redistributed here.

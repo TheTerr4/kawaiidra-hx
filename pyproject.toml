@@ -1,0 +1,47 @@
+[project]
+name = "kawaiidra-hx"
+version = "0.1.0"
+description = "PyGhidra-based reverse-engineering workbench (PE-first, patch-oriented) with an MCP server and CLI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mcp>=1.25,<2",
+    # pyghidra must match the installed Ghidra (3.1.0 <-> Ghidra 12.1.x). It pins JPype1==1.5.2, which has no
+    # cp314 wheels; see [tool.uv] override below. Verified: pyghidra 3.1.0 + JPype 1.7.1 on Python 3.14.
+    "pyghidra>=3.1.0",
+    "JPype1>=1.5.2",
+    "certifi>=2024.2.2",  # CA bundle for corpus downloads (TLS verification stays on)
+]
+
+[project.scripts]
+khx = "kawaiidra_hx.cli:main"
+kawaiidra-hx = "kawaiidra_hx.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+]
+
+[tool.uv]
+override-dependencies = ["jpype1>=1.5.2"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kawaiidra_hx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# faulthandler must be off: the JVM raises benign access violations (null checks, safepoints) at startup
+addopts = "-ra -p no:faulthandler"
+timeout = 900
+markers = [
+    "ghidra: needs a Ghidra install and starts the JVM (slow); skipped when GHIDRA_INSTALL_DIR is unset",
+    "reference: needs the private reference DLLs / Ghidra project from tests/reference.local.json (read in place); skipped when absent",
+    "slow: whole-program scans (tens of seconds each)",
+    "corpus: needs a binary from corpus/ (user-supplied or verified download); skipped when absent",
+]

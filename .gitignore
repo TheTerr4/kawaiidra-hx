@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Local data: Ghidra projects, offloaded results, logs, downloaded/user-supplied binaries
+workspace/
+logs/
+corpus/user-supplied/
+corpus/downloads/
+tests/reference.local.json
+*.gpr
+*.rep/
+*.lock
+*.lock~
+!uv.lock
+
+# Patched binaries are build output, never committed
+*_patched.dll
+*_patched.exe

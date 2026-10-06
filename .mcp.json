@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kawaiidra-hx": {
+      "command": ".venv\\Scripts\\python.exe",
+      "args": ["-m", "kawaiidra_hx.mcp_server"],
+      "env": {
+        "GHIDRA_INSTALL_DIR": "${GHIDRA_INSTALL_DIR}"
+      }
+    }
+  }
+}

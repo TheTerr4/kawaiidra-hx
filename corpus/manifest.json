@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "sqlite-3.53.4-x64",
+      "file": "sqlite3-3.53.4-x64.dll",
+      "url": "https://www.sqlite.org/2026/sqlite-dll-win-x64-3530400.zip",
+      "size": 1370147,
+      "sha3_256": "deddee963c810d1eeac3ce5e15c7c41da21a1c54d7a39cf54fbf577d2f50de3a",
+      "member": "sqlite3.dll",
+      "license": "Public domain",
+      "source": "https://www.sqlite.org/download.html (machine-readable PRODUCT line: size + SHA3-256 of the zip)",
+      "notes": "x64 DLL, C, no RTTI. Archive digest is the vendor's; member_sha256 is our own hash of the extracted DLL, recorded after the first verified fetch.",
+      "member_sha256": "ab57d0437795ecc757cb693f32ea224173fa9856594d95cfa6b5033e645cd1ec"
+    },
+    {
+      "name": "sqlite-3.53.4-x86",
+      "file": "sqlite3-3.53.4-x86.dll",
+      "url": "https://www.sqlite.org/2026/sqlite-dll-win-x86-3530400.zip",
+      "size": 1095354,
+      "sha3_256": "64bf53d675ae2fcee57e180e8f59035e1b2b11ed5a2915450e26d0930a3cb9c8",
+      "member": "sqlite3.dll",
+      "license": "Public domain",
+      "source": "https://www.sqlite.org/download.html (machine-readable PRODUCT line: size + SHA3-256 of the zip)",
+      "notes": "32-bit x86 DLL (like the old reference build). member_sha256 is our own hash of the extracted DLL, recorded after the first verified fetch.",
+      "member_sha256": "1c2fcfa7632b6025829e3539142f1b7ebdbc5bb44d4fd6cc0f42f83715d2eb9f"
+    },
+    {
+      "name": "putty-0.85-w64",
+      "file": "putty-0.85-w64.exe",
+      "url": "https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe",
+      "size": 1706136,
+      "sha256": "d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87",
+      "license": "MIT",
+      "source": "https://the.earth.li/~sgtatham/putty/0.85/sha256sums",
+      "notes": "x64 EXE written in C with a large Win32 import surface. Kawaiidra's own default test binary was PuTTY."
+    },
+    {
+      "name": "putty-0.85-w32",
+      "file": "putty-0.85-w32.exe",
+      "url": "https://the.earth.li/~sgtatham/putty/0.85/w32/putty.exe",
+      "size": 1513624,
+      "sha256": "4c70267ca03a00ea761ec358498b990a7221decb36eace9b7dbe6a751be0fb3b",
+      "license": "MIT",
+      "source": "https://the.earth.li/~sgtatham/putty/0.85/sha256sums",
+      "notes": "32-bit x86 EXE."
+    }
+  ]
+}
