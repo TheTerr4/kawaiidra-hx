@@ -18,6 +18,15 @@ def read_bytes(h: ProgramHandle, where: str, count: int) -> str:
         return " ".join(f"{b & 0xFF:02x}" for b in buf[:n]) + (" " if n else "")
 
 
+def fetch_bytes(h: ProgramHandle, addr, count: int) -> bytes:
+    """Raw bytes at a Ghidra ``Address`` (shorter than ``count`` if memory ends). Caller holds ``h.lock``."""
+    from jpype import JArray, JByte
+
+    buf = JArray(JByte)(count)  # a real Java byte[]: JPype copies Python bytearrays instead of filling them
+    n = int(h.program.getMemory().getBytes(addr, buf))
+    return bytes(b & 0xFF for b in buf[:n])
+
+
 def pointer_table(h: ProgramHandle, where: str, count: int = 40) -> str:
     """Dump ``count`` pointers starting at an address and the function each one points to (vtables, jump tables)."""
     with h.lock:

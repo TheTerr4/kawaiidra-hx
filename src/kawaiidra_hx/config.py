@@ -49,7 +49,7 @@ class Settings:
 
     def require_ghidra(self) -> Path:
         if self.ghidra_dir is None:
-            raise ConfigError("GHIDRA_INSTALL_DIR is not set. Point it at your Ghidra install, e.g. C:\\ghidra_12.1.4_PUBLIC")
+            raise ConfigError("GHIDRA_INSTALL_DIR is not set. Point it at the folder of your Ghidra install (the one that contains `Ghidra/` and `support/`).")
         if not (self.ghidra_dir / "Ghidra" / "application.properties").exists():
             raise ConfigError(f"GHIDRA_INSTALL_DIR={self.ghidra_dir} does not look like a Ghidra install (no Ghidra/application.properties)")
         return self.ghidra_dir

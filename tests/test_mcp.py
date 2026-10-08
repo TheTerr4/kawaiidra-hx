@@ -45,26 +45,37 @@ def test_lists_expected_tools():
         "list_projects", "import_binary", "job_status", "program_info", "resolve", "decompile", "disassemble",
         "xrefs_to", "callers", "find_strings", "scan_instructions", "find_bytes", "query", "rename", "save_program",
         "pe_sections", "offset_to_va", "patch_verify", "patch_apply", "patch_make", "branch_encode",
+        "pe_identify", "pe_imports", "pe_exports", "patch_show", "patch_diff",
     ):  # fmt: skip
         assert expected in names, expected
 
 
 @pytest.mark.reference
-def test_patch_tools_need_no_ghidra(ref_new, ref_patch_json):
+def test_patch_tools_need_no_ghidra(ref_new, ref_new_patched, ref_patch_json):
     async def go(session):
         sections = _text(await session.call_tool("pe_sections", {"file_path": str(ref_new)}))
         off = _text(await session.call_tool("offset_to_va", {"file_path": str(ref_new), "offsets": ["6094176"]}))
         va = _text(await session.call_tool("va_to_offset", {"file_path": str(ref_new), "addresses": ["0x1805D0760"]}))
         ver = _text(await session.call_tool("patch_verify", {"file_path": str(ref_new), "patch_file": str(ref_patch_json)}))
         br = _text(await session.call_tool("branch_encode", {"at": "0x1805D091B", "to": "0x1805D0990", "op": "jmp", "short": True}))
-        return sections, off, va, ver, br
+        ident = _text(await session.call_tool("pe_identify", {"file_path": str(ref_new), "game_codes": ["ABC"]}))
+        exports = _text(await session.call_tool("pe_exports", {"file_path": str(ref_new)}))
+        imports = _text(await session.call_tool("pe_imports", {"file_path": str(ref_new)}))
+        shown = _text(await session.call_tool("patch_show", {"patch_file": str(ref_patch_json)}))
+        diff = _text(await session.call_tool("patch_diff", {"original_path": str(ref_new), "modified_path": str(ref_new_patched), "name": "all"}))
+        return sections, off, va, ver, br, ident, exports, imports, shown, diff
 
-    sections, off, va, ver, br = asyncio.run(_with_session(go))
+    sections, off, va, ver, br, ident, exports, imports, shown, diff = asyncio.run(_with_session(go))
     assert ".text" in sections and "0x180000000" in sections
     assert "VA 0x1805D0760" in off
     assert "file 0x5CFD60" in va
-    assert "5/5 patches OK" in ver
+    assert "5/5 checks OK" in ver
     assert "EB73" in br
+    assert "patch id ABC-" in ident and "x64" in ident
+    assert exports.startswith(("module ", "(no export directory)"))
+    assert "import(s)" in imports
+    assert "[memory]" in shown
+    assert '"dataEnabled"' in diff and '"dataDisabled"' in diff
 
 
 @pytest.mark.ghidra

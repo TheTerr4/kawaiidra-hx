@@ -20,8 +20,9 @@ exactly one program.
 | | `read_bytes`, `pointer_table`, `data_at`, `rtti_classes` | data |
 | | `query` | many commands in one call (see below) |
 | Annotate | `rename`, `set_comment`, `save_program` | write mode; persisted only on save |
-| PE / patch (no Ghidra) | `pe_sections`, `offset_to_va`, `va_to_offset` | header math for any PE on disk |
-| | `patch_verify`, `patch_apply`, `patch_make`, `branch_encode` | JSON file-offset patches; `patch_apply` writes a copy |
+| PE / patch (no Ghidra) | `pe_identify`, `pe_sections`, `pe_imports`, `pe_exports` | identity (sha256, timestamp, entry point, patch id), headers, import/export tables |
+| | `offset_to_va`, `va_to_offset` | header math for any PE on disk |
+| | `patch_show`, `patch_verify`, `patch_apply`, `patch_make`, `patch_diff`, `branch_encode` | JSON patch files (memory, union, number, signature, group); `patch_apply` writes a copy |
 
 Large results are saved under `workspace/results/` and truncated inline with the file path.
 
@@ -38,17 +39,30 @@ Output of each command is framed by `=========== <command> ===========`. `#` lin
 
 ```
 khx doctor [--jvm]
-khx pe sections|off2va|va2off FILE ...
-khx patch verify FILE patches.json [--entry NAME]...
-khx patch apply FILE patches.json -o OUT [--entry NAME]... [--overwrite]
-khx patch make FILE --name N --edit va:0x1805D0760=B863000000C3 [--game ABC --dll target.dll] [-o entry.json]
-khx patch branch --at 0x1805D091B --to 0x1805D0990 --op jmp --short
-khx import FILE [-p PROJECT] [--no-analyze] [--overwrite]      # progress on stderr, Ctrl-C cancels
+khx pe sections|off2va|va2off|identify|exports|imports FILE ...
+khx patch show JSON
+khx patch verify FILE patches.json [--entry NAME]... [--ignore-identity]
+khx patch apply  FILE patches.json -o OUT [--entry NAME]... [--set NAME=VALUE]... [--overwrite]
+khx patch revert FILE patches.json -o OUT [--entry NAME]...
+khx patch make FILE --name N --edit va:0x1805D0760=B863000000C3 [--game ABC --dll target.dll --pe-id ID] [-o entry.json | --append-to patches.json]
+khx patch diff ORIGINAL MODIFIED --name N [--gap N --pad N] [-o entry.json | --append-to patches.json]
+khx patch merge TARGET.json SOURCE.json [--replace]
+khx patch branch --at 0x1805D091B --to 0x1805D0990 --op jmp|call|jnz|... [--short | --near]
+khx import FILE [-p PROJECT] [--name NAME|auto --game ABC] [--no-analyze] [--overwrite]      # progress on stderr, Ctrl-C cancels
 khx projects | khx programs [PROJECT]
 khx query PROJECT PROGRAM -c "decomp 0x..." -c "xrefs 0x..."  |  -f cmds.txt  |  < cmds.txt
 khx commands | khx mcp
 khx corpus list | verify | fetch NAME --yes
 ```
+
+## Patch files
+
+JSON list of entries. Offsets are FILE offsets. Types: `memory` (toggle `dataDisabled`/`dataEnabled`), `union` (pick one option;
+`--set "Mode=Fast"`), `number` (`--set "Rate=120"`, little-endian, range-checked), `signature` (byte pattern with `??`/`XX` wildcards,
+`usage` = 0-based n-th match, `offset` into the match), `group` (UI only). Metadata header objects (no `name`) are preserved, and so are
+unknown keys. A patch file named `{gameCode}-{TimeDateStamp:x}_{EntryRVA:x}.json` (or entries with `peIdentifier`) is only applied to that
+build: `verify`/`apply` fail with `WRONG_BUILD` otherwise (`--ignore-identity` to override). Unselected unions/numbers are skipped, never
+guessed. `apply`/`revert` always write a copy and abort before writing on any mismatch or overlap.
 
 ## Configuration
 

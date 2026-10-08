@@ -21,6 +21,12 @@ MACHINES = {0x14C: "x86", 0x8664: "x64", 0xAA64: "arm64", 0x1C0: "arm", 0x1C4: "
 _PE32 = 0x10B
 _PE32_PLUS = 0x20B
 
+# Index in the optional header's data-directory table.
+DIRECTORY_NAMES = (
+    "export", "import", "resource", "exception", "security", "basereloc", "debug", "architecture",
+    "globalptr", "tls", "load_config", "bound_import", "iat", "delay_import", "clr", "reserved",
+)  # fmt: skip
+
 
 class PEError(ValueError):
     """The data is not a PE image we can parse."""
@@ -74,6 +80,23 @@ class PEInfo:
     size_of_headers: int
     timestamp: int
     sections: tuple[Section, ...] = field(default_factory=tuple)
+    entry_rva: int = 0  # AddressOfEntryPoint
+    dll_characteristics: int = 0
+    directories: tuple[tuple[int, int], ...] = ()  # (rva, size) per DIRECTORY_NAMES entry; ``security`` is a FILE offset
+
+    # --- identity ----------------------------------------------------------------------------
+
+    def pe_identifier(self, game_code: str) -> str:
+        """Build identifier ``{code}-{TimeDateStamp:x}_{AddressOfEntryPoint:x}`` (lowercase hex), e.g. ``ABC-12345678_1000``."""
+        return f"{game_code}-{self.timestamp:x}_{self.entry_rva:x}"
+
+    def directory(self, name: str) -> tuple[int, int]:
+        """``(rva, size)`` of a data directory by name; ``(0, 0)`` when absent."""
+        try:
+            i = DIRECTORY_NAMES.index(name)
+        except ValueError:
+            raise KeyError(name) from None
+        return self.directories[i] if i < len(self.directories) else (0, 0)
 
     # --- conversions -------------------------------------------------------------------------
 
@@ -165,6 +188,12 @@ def parse_pe(source: Union[str, Path, bytes, bytearray]) -> PEInfo:
     else:
         raise PEError(f"{label}: unknown optional-header magic 0x{magic:X}")
     size_of_image, size_of_headers = struct.unpack_from("<II", data, opt + 56)
+    (entry_rva,) = struct.unpack_from("<I", data, opt + 16)
+    (dll_chars,) = struct.unpack_from("<H", data, opt + 70)
+    dir_count_at = opt + (108 if is64 else 92)
+    (n_dirs,) = struct.unpack_from("<I", data, dir_count_at)
+    n_dirs = min(n_dirs, 16, max(0, (opt_size - (dir_count_at + 4 - opt)) // 8))
+    directories = tuple(struct.unpack_from("<II", data, dir_count_at + 4 + 8 * i) for i in range(n_dirs))
 
     table = opt + opt_size
     if table + nsections * 40 > len(data):
@@ -192,6 +221,9 @@ def parse_pe(source: Union[str, Path, bytes, bytearray]) -> PEInfo:
         size_of_headers=size_of_headers,
         timestamp=timestamp,
         sections=tuple(sections),
+        entry_rva=entry_rva,
+        dll_characteristics=dll_chars,
+        directories=directories,
     )
 
 

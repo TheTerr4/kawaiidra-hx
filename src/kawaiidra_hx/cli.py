@@ -77,28 +77,107 @@ def cmd_pe_va2off(args: argparse.Namespace) -> int:
     return rc
 
 
+def cmd_pe_identify(args: argparse.Namespace) -> int:
+    from .pe import PEImage
+
+    ident = PEImage(args.file).identity
+    print(f"file        {ident.path}")
+    print(f"size        {ident.size}")
+    print(f"sha256      {ident.sha256}")
+    print(f"machine     {ident.machine} ({'PE32+' if ident.is_64bit else 'PE32'} {'DLL' if ident.is_dll else 'EXE'})")
+    print(f"image base  0x{ident.image_base:X}")
+    print(f"timestamp   0x{ident.timestamp:x} ({ident.build_time} UTC)")
+    print(f"entry RVA   0x{ident.entry_rva:x}")
+    for code in args.game or []:
+        print(f"patch id    {ident.pe_identifier(code)}")
+    if not args.game:
+        print(f"patch id    <GAMECODE>-{ident.timestamp:x}_{ident.entry_rva:x}   (patch file name stem; give --game CODE)")
+    return 0
+
+
+def cmd_pe_exports(args: argparse.Namespace) -> int:
+    from .pe import PEImage
+
+    ex = PEImage(args.file).exports
+    if ex is None:
+        print("(no export directory)")
+        return 0
+    print(f"module {ex.module_name}  ordinal base {ex.ordinal_base}  {len(ex.exports)} export(s)")
+    for e in ex.exports:
+        print(f"  #{e.ordinal:<4} 0x{e.rva:08X}  {e.name or '<ordinal only>'}" + (f"  -> {e.forwarder}" if e.forwarder else ""))
+    return 0
+
+
+def cmd_pe_imports(args: argparse.Namespace) -> int:
+    from .pe import PEImage
+
+    libs = PEImage(args.file).imports
+    want = [d.lower() for d in args.dll or []]
+    for lib in libs:
+        if want and not any(w in lib.dll.lower() for w in want):
+            continue
+        extra = f", {lib.by_ordinal} by ordinal" if lib.by_ordinal else ""
+        print(f"{lib.dll}{' (delay-load)' if lib.delay else ''}  {len(lib.symbols)} import(s){extra}")
+        if args.dll or args.all:
+            for sym in lib.symbols:
+                print(f"    0x{sym.iat_rva:08X}  {sym.label}")
+    return 0
+
+
 # --- patch ------------------------------------------------------------------------------------
 
 
-def cmd_patch_verify(args: argparse.Namespace) -> int:
-    from .patch import load_entries, select_entries, verify
+def _expected_id(pf, args: argparse.Namespace) -> Optional[str]:
+    return None if getattr(args, "ignore_identity", False) else pf.pe_identifier
 
-    entries = select_entries(load_entries(args.json), args.entry)
-    report = verify(args.file, entries)
+
+def _parse_sets(items: Optional[list[str]]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in items or []:
+        name, sep, value = item.rpartition("=")
+        if not sep or not name:
+            raise SystemExit(f"--set expects NAME=VALUE (union option name or number), got {item!r}")
+        out[name] = value
+    return out
+
+
+def cmd_patch_show(args: argparse.Namespace) -> int:
+    from .patch import describe_entries, load_patchfile
+
+    print(describe_entries(load_patchfile(args.json)))
+    return 0
+
+
+def cmd_patch_verify(args: argparse.Namespace) -> int:
+    from .patch import load_patchfile, select_entries, verify
+
+    pf = load_patchfile(args.json)
+    report = verify(args.file, select_entries(pf.entries, args.entry), expected_id=_expected_id(pf, args))
     print(report.format())
     return 0 if report.ok else 1
 
 
 def cmd_patch_apply(args: argparse.Namespace) -> int:
-    from .patch import apply, load_entries, select_entries
+    from .patch import apply, load_patchfile, select_entries
 
-    entries = select_entries(load_entries(args.json), args.entry)
-    print(apply(args.file, args.output, entries, overwrite=args.overwrite).format())
+    pf = load_patchfile(args.json)
+    rep = apply(
+        args.file, args.output, select_entries(pf.entries, args.entry), overwrite=args.overwrite,
+        selections=_parse_sets(args.set), mode="revert" if getattr(args, "revert", False) else "apply",
+        expected_id=_expected_id(pf, args),
+    )  # fmt: skip
+    print(rep.format())
     return 0
 
 
+def cmd_patch_revert(args: argparse.Namespace) -> int:
+    args.revert = True
+    args.set = None
+    return cmd_patch_apply(args)
+
+
 def cmd_patch_make(args: argparse.Namespace) -> int:
-    from .patch import dump_entries, make_entry
+    from .patch import make_entry
 
     edits = []
     for e in args.edit:
@@ -106,13 +185,53 @@ def cmd_patch_make(args: argparse.Namespace) -> int:
         if not sep:
             raise SystemExit(f"--edit expects LOCATION=HEX (e.g. va:0x1805D0760=B863000000C3), got {e!r}")
         edits.append((loc, hexbytes))
-    entry = make_entry(args.file, edits, name=args.name, description=args.description, game_code=args.game, dll_name=args.dll)
+    entry = make_entry(
+        args.file, edits, name=args.name, description=args.description, game_code=args.game, dll_name=args.dll,
+        pe_identifier=args.pe_id, caution=args.caution or "",
+    )  # fmt: skip
+    return _emit_entry(entry, args)
+
+
+def cmd_patch_diff(args: argparse.Namespace) -> int:
+    from .patch import diff_entry
+
+    entry = diff_entry(
+        args.original, args.modified, name=args.name, description=args.description, game_code=args.game,
+        dll_name=args.dll, gap=args.gap, pad=args.pad, pe_identifier=args.pe_id,
+    )  # fmt: skip
+    return _emit_entry(entry, args)
+
+
+def _emit_entry(entry, args: argparse.Namespace) -> int:
+    from .patch import PatchFile, dump_entries, load_patchfile, merge_entries
+
+    if getattr(args, "append_to", None):
+        target = Path(args.append_to)
+        pf = load_patchfile(target) if target.exists() else PatchFile(entries=[])
+        _pf, log = merge_entries(pf, [entry], replace=args.replace)
+        target.write_text(pf.dumps(), encoding="utf-8")
+        print(f"{log[0]} in {target}")
+        return 0
     text = dump_entries([entry])
     if args.output:
-        Path(args.output).write_text(text, encoding="utf-8")
-        print(f"wrote {args.output}")
+        out = Path(args.output)
+        if out.exists() and not args.overwrite:
+            raise SystemExit(f"{out} exists; use --append-to {out} to add the entry, or --overwrite to replace the file")
+        out.write_text(text, encoding="utf-8")
+        print(f"wrote {out}")
     else:
         print(text, end="")
+    return 0
+
+
+def cmd_patch_merge(args: argparse.Namespace) -> int:
+    from .patch import load_patchfile, merge_entries
+
+    target = load_patchfile(args.target)
+    source = load_patchfile(args.source)
+    _pf, log = merge_entries(target, source.entries, replace=args.replace)
+    Path(args.target).write_text(target.dumps(), encoding="utf-8")
+    print("\n".join(log))
     return 0
 
 
@@ -121,13 +240,7 @@ def cmd_patch_branch(args: argparse.Namespace) -> int:
 
     src, dst = parse_hex(args.at), parse_hex(args.to)
     op = args.op.lower()
-    if op == "jmp":
-        data = asm.jmp_short(src, dst) if args.short else asm.jmp_near(src, dst)
-    elif op == "call":
-        disp = dst - (src + 5)
-        data = bytes([0xE8]) + (disp & 0xFFFFFFFF).to_bytes(4, "little")
-    else:
-        data = asm.jcc_short(op, src, dst)
+    data = asm.branch(op, src, dst, short=args.short, near=args.near)
     print(f"{op} 0x{src:X} -> 0x{dst:X}: {data.hex().upper()}")
     return 0
 
@@ -141,12 +254,18 @@ def cmd_import(args: argparse.Namespace) -> int:
 
     session = get_session()
     session.ensure_started()  # start the JVM on the main thread
+    name = args.name
+    if name == "auto":  # program named by build id, e.g. ABC-12345678_1000.dll (modules that all share one file name)
+        from .pe import PEImage
+
+        name = PEImage(args.file).identity.pe_identifier(args.game) + Path(args.file).suffix
+        print(f"program name: {name}", file=sys.stderr)
     jobs = get_jobs()
     job = jobs.submit(
         "import",
         Path(args.file).name,
         lambda j: import_program(
-            session, args.file, args.project, analyze=not args.no_analyze, name=args.name, overwrite=args.overwrite, job=j
+            session, args.file, args.project, analyze=not args.no_analyze, name=name, overwrite=args.overwrite, job=j
         ),
     )
     last = ""
@@ -388,42 +507,92 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file")
     p.add_argument("va", nargs="+")
     p.set_defaults(func=cmd_pe_va2off)
+    p = pe.add_parser("identify", help="build identity: sha256, timestamp, entry point, patch id")
+    p.add_argument("file")
+    p.add_argument("--game", action="append", help="game code(s) to print a patch id for, e.g. ABC (repeatable)")
+    p.set_defaults(func=cmd_pe_identify)
+    p = pe.add_parser("exports", help="export table")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_pe_exports)
+    p = pe.add_parser("imports", help="imports grouped by library (--dll NAME lists that library's symbols)")
+    p.add_argument("file")
+    p.add_argument("--dll", action="append", help="only libraries whose name contains this (repeatable); lists their symbols")
+    p.add_argument("--all", action="store_true", help="list every symbol")
+    p.set_defaults(func=cmd_pe_imports)
 
     # patch
     pt = sub.add_parser("patch", help="JSON file-offset patch tools (no JVM)").add_subparsers(dest="patch_cmd", required=True)
-    p = pt.add_parser("verify", help="check that a binary contains the bytes a patch file expects")
+    p = pt.add_parser("show", help="list the entries of a patch file")
+    p.add_argument("json")
+    p.set_defaults(func=cmd_patch_show)
+    p = pt.add_parser("verify", help="check that a binary contains the bytes a patch file expects (and is the build it names)")
     p.add_argument("file")
     p.add_argument("json")
     p.add_argument("--entry", action="append", help="entry name or 1-based index (repeatable); default all")
+    p.add_argument("--ignore-identity", action="store_true", help="do not require the PE identifier in the patch file name/entries to match")
     p.set_defaults(func=cmd_patch_verify)
     p = pt.add_parser("apply", help="write a patched COPY of the binary (never modifies the source)")
     p.add_argument("file")
     p.add_argument("json")
     p.add_argument("-o", "--output", required=True)
     p.add_argument("--entry", action="append")
+    p.add_argument("--set", action="append", metavar="NAME=VALUE", help='choose a union option / number value, e.g. --set "Mode=Fast"')
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--ignore-identity", action="store_true")
     p.set_defaults(func=cmd_patch_apply)
+    p = pt.add_parser("revert", help="write a COPY with memory/signature patches reverted to their original bytes")
+    p.add_argument("file")
+    p.add_argument("json")
+    p.add_argument("-o", "--output", required=True)
+    p.add_argument("--entry", action="append")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--ignore-identity", action="store_true")
+    p.set_defaults(func=cmd_patch_revert)
+
+    def entry_output_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--description", default="")
+        p.add_argument("--caution")
+        p.add_argument("--game", help="gameCode to record, e.g. ABC")
+        p.add_argument("--dll", help="dllName to record, e.g. target.dll")
+        p.add_argument("--pe-id", help="peIdentifier to record, e.g. ABC-12345678_1000 (see `khx pe identify`)")
+        p.add_argument("-o", "--output", help="write the entry as a new JSON file (refuses to overwrite without --overwrite)")
+        p.add_argument("--overwrite", action="store_true")
+        p.add_argument("--append-to", metavar="JSON", help="add the entry to this patch file (created if missing)")
+        p.add_argument("--replace", action="store_true", help="with --append-to: replace an entry of the same name")
+
     p = pt.add_parser("make", help="build a patch entry, reading the original bytes from the binary")
     p.add_argument("file")
     p.add_argument("--name", required=True)
-    p.add_argument("--description", default="")
-    p.add_argument("--game", help="gameCode to record, e.g. ABC")
-    p.add_argument("--dll", help="dllName to record, e.g. target.dll")
     p.add_argument("--edit", action="append", required=True, metavar="LOC=HEX", help="e.g. va:0x1805D0760=B863000000C3 or off:0x5CFD60=9090")
-    p.add_argument("-o", "--output")
+    entry_output_args(p)
     p.set_defaults(func=cmd_patch_make)
+    p = pt.add_parser("diff", help="turn the byte differences between two same-size binaries into a patch entry")
+    p.add_argument("original")
+    p.add_argument("modified")
+    p.add_argument("--name", required=True)
+    p.add_argument("--gap", type=int, default=0, help="merge differing runs closer than this many bytes")
+    p.add_argument("--pad", type=int, default=0, help="widen every patch by this many context bytes each side")
+    entry_output_args(p)
+    p.set_defaults(func=cmd_patch_diff)
+    p = pt.add_parser("merge", help="add the entries of one patch file to another")
+    p.add_argument("target")
+    p.add_argument("source")
+    p.add_argument("--replace", action="store_true")
+    p.set_defaults(func=cmd_patch_merge)
     p = pt.add_parser("branch", help="encode a jump/call from one address to another")
     p.add_argument("--at", required=True, help="address of the branch instruction")
     p.add_argument("--to", required=True, help="target address")
     p.add_argument("--op", default="jmp", help="jmp, call, or a conditional such as jnz/jbe")
     p.add_argument("--short", action="store_true", help="jmp: use the 2-byte rel8 form")
+    p.add_argument("--near", action="store_true", help="conditional: use the 6-byte 0F 8x rel32 form")
     p.set_defaults(func=cmd_patch_branch)
 
     # ghidra
     p = sub.add_parser("import", help="import (and analyze) a binary into a project; progress on stderr")
     p.add_argument("file")
     p.add_argument("-p", "--project", help="project name, .gpr path or folder (default: workspace 'default')")
-    p.add_argument("--name", help="program name inside the project (default: file name)")
+    p.add_argument("--name", help="program name inside the project (default: file name; `auto` = <GAME>-<TimeDateStamp>_<EntryRVA> + extension)")
+    p.add_argument("--game", default="PE", help="game code for --name auto (e.g. ABC)")
     p.add_argument("--no-analyze", action="store_true")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--progress-every", type=int, default=10, help="seconds between progress lines")

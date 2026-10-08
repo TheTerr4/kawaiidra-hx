@@ -169,8 +169,10 @@ class ProgramHandle:
         with self.lock:
             if self._closed:
                 return
-            if self.has_unsaved_changes and not discard:
-                raise KhxError(f"{self.name} has unsaved changes; save first or close with discard=True")
+            if self.has_unsaved_changes:
+                if not discard:
+                    raise KhxError(f"{self.name} has unsaved changes; save first or close with discard=True")
+                log.warning("discarding unsaved changes in %s (save_program was not called)", self.name)
             if self._decompiler is not None:
                 try:
                     self._decompiler.dispose()

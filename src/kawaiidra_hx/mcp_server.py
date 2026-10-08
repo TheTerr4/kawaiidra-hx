@@ -35,8 +35,8 @@ kawaiidra-hx: Ghidra-backed reverse engineering for Windows PE binaries, plus pa
 Workflow: list_projects -> (import_binary if the binary is not in a project; it runs as a job, poll job_status)
 -> explore with `query` (batch many commands in ONE call: decomp/disf/xrefs/str/scan/...) or the single-purpose tools.
 Locations accept 0x1805d0760, FUN_1805d0760, rva:0x5d0760 and off:0x5CFD60 (FILE offset, as used by patch JSON).
-Patch work needs no Ghidra: pe_sections / offset_to_va / va_to_offset / patch_verify / patch_apply (writes a COPY,
-never the original). Programs are read-only unless you call a write tool (rename, set_comment) and then save_program.
+Patch work needs no Ghidra: pe_identify / pe_sections / pe_imports / pe_exports / offset_to_va / va_to_offset / patch_show /
+patch_verify / patch_apply / patch_diff (apply writes a COPY, never the original). Programs are read-only unless you call a write tool (rename, set_comment) and then save_program.
 Decompiler output can vary slightly (undefined4 vs undefined8) with the order functions were decompiled in a session.
 """
 
@@ -417,12 +417,74 @@ async def va_to_offset(file_path: str, addresses: list[str]) -> str:
 
 
 @mcp.tool(annotations=READ)
-async def patch_verify(file_path: str, patch_file: str, entries: Optional[list[str]] = None) -> str:
-    """Check a binary against a patch JSON (file-offset entries): each patch must contain its expected original bytes
-    (state ORIGINAL) or already be applied. Reports the VA of each patch. Read-only."""
-    from .patch import load_entries, select_entries, verify
+async def pe_identify(file_path: str, game_codes: Optional[list[str]] = None) -> str:
+    """Build identity of a PE file: sha256, machine, linker timestamp, entry point and the build/patch identifier
+    (`{gameCode}-{TimeDateStamp:x}_{EntryRVA:x}`, e.g. ABC-12345678_1000) for each game code given. No Ghidra needed."""
+    from .pe import PEImage
 
-    return verify(file_path, select_entries(load_entries(patch_file), entries)).format()
+    ident = PEImage(file_path).identity
+    lines = [
+        f"file {ident.path}", f"size {ident.size}", f"sha256 {ident.sha256}",
+        f"machine {ident.machine} ({'PE32+' if ident.is_64bit else 'PE32'} {'DLL' if ident.is_dll else 'EXE'})",
+        f"image base 0x{ident.image_base:X}", f"timestamp 0x{ident.timestamp:x} ({ident.build_time} UTC)",
+        f"entry RVA 0x{ident.entry_rva:x}",
+    ]  # fmt: skip
+    lines += [f"patch id {ident.pe_identifier(c)}" for c in game_codes or []]
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations=READ)
+async def pe_exports(file_path: str) -> str:
+    """Export table of a PE file (ordinal, RVA, name, forwarder). No Ghidra needed."""
+    from .pe import PEImage
+
+    ex = PEImage(file_path).exports
+    if ex is None:
+        return "(no export directory)"
+    rows = [f"module {ex.module_name}  ordinal base {ex.ordinal_base}  {len(ex.exports)} export(s)"]
+    rows += [f"#{e.ordinal} 0x{e.rva:08X} {e.name or '<ordinal only>'}" + (f" -> {e.forwarder}" if e.forwarder else "") for e in ex.exports]
+    return "\n".join(rows)
+
+
+@mcp.tool(annotations=READ)
+async def pe_imports(file_path: str, dll: Optional[str] = None) -> str:
+    """Imports of a PE file grouped by library; pass `dll` (substring) to list that library's symbols with IAT RVAs
+    (ordinal imports show as #N). No Ghidra needed."""
+    from .pe import PEImage
+
+    out: list[str] = []
+    for lib in PEImage(file_path).imports:
+        if dll and dll.lower() not in lib.dll.lower():
+            continue
+        extra = f", {lib.by_ordinal} by ordinal" if lib.by_ordinal else ""
+        out.append(f"{lib.dll}{' (delay-load)' if lib.delay else ''}  {len(lib.symbols)} import(s){extra}")
+        if dll:
+            out += [f"    0x{sy.iat_rva:08X}  {sy.label}" for sy in lib.symbols]
+    return "\n".join(out) or "(no matching imports)"
+
+
+@mcp.tool(annotations=READ)
+async def patch_show(patch_file: str) -> str:
+    """List the entries of a patch JSON (type, name, offsets/options). Understands memory, union, number, signature and
+    group entries and the metadata header."""
+    from .patch import describe_entries, load_patchfile
+
+    return describe_entries(load_patchfile(patch_file))
+
+
+@mcp.tool(annotations=READ)
+async def patch_verify(
+    file_path: str, patch_file: str, entries: Optional[list[str]] = None, ignore_identity: bool = False
+) -> str:
+    """Check a binary against a patch JSON (file-offset entries). memory: ORIGINAL or APPLIED; union: which option the
+    file currently holds; number: current value vs range; signature: resolved offset + match count. Also checks that the
+    binary is the build the patch file names (PE identifier from its file name / `peIdentifier`) unless ignore_identity.
+    Reports the VA of each patch. Read-only."""
+    from .patch import load_patchfile, select_entries, verify
+
+    pf = load_patchfile(patch_file)
+    expected = None if ignore_identity else pf.pe_identifier
+    return verify(file_path, select_entries(pf.entries, entries), expected_id=expected).format()
 
 
 @mcp.tool(annotations=FILEWRITE)
@@ -432,12 +494,27 @@ async def patch_apply(
     output_path: str,
     entries: Optional[list[str]] = None,
     overwrite: bool = False,
+    set_values: Optional[list[str]] = None,
+    revert: bool = False,
+    ignore_identity: bool = False,
 ) -> str:
     """Write a patched COPY of `file_path` to `output_path` (the source is never modified; aborts before writing if any
-    expected original bytes are missing)."""
-    from .patch import apply, load_entries, select_entries
+    expected original bytes are missing or the build differs). `set_values` choose union options / number values as
+    `NAME=VALUE` (unselected unions/numbers are skipped); `revert=true` restores the original bytes of memory/signature patches."""
+    from .patch import apply, load_patchfile, select_entries
 
-    return apply(file_path, output_path, select_entries(load_entries(patch_file), entries), overwrite=overwrite).format()
+    sel: dict[str, str] = {}
+    for item in set_values or []:
+        name, sep, value = item.rpartition("=")
+        if not sep or not name:
+            raise KhxError(f"set_values item {item!r} must look like NAME=VALUE")
+        sel[name] = value
+    pf = load_patchfile(patch_file)
+    rep = apply(
+        file_path, output_path, select_entries(pf.entries, entries), overwrite=overwrite, selections=sel,
+        mode="revert" if revert else "apply", expected_id=None if ignore_identity else pf.pe_identifier,
+    )  # fmt: skip
+    return rep.format()
 
 
 @mcp.tool(annotations=READ)
@@ -448,6 +525,8 @@ async def patch_make(
     description: str = "",
     game_code: Optional[str] = None,
     dll_name: Optional[str] = None,
+    pe_identifier: Optional[str] = None,
+    caution: str = "",
 ) -> str:
     """Build a patch JSON entry. `edits` are `LOCATION=HEX` strings, e.g. `va:0x1805D0760=B863000000C3` or
     `off:0x5CFD60=9090`; the original bytes are read from the file, so dataDisabled is always exact. Returns JSON text."""
@@ -459,23 +538,39 @@ async def patch_make(
         if not sep:
             raise KhxError(f"edit {e!r} must look like LOCATION=HEX")
         parsed.append((loc, hx))
-    return dump_entries([make_entry(file_path, parsed, name=name, description=description, game_code=game_code, dll_name=dll_name)])
+    entry = make_entry(
+        file_path, parsed, name=name, description=description, game_code=game_code, dll_name=dll_name,
+        pe_identifier=pe_identifier, caution=caution,
+    )  # fmt: skip
+    return dump_entries([entry])
 
 
 @mcp.tool(annotations=READ)
-async def branch_encode(at: str, to: str, op: str = "jmp", short: bool = False) -> str:
-    """Encode a branch at address `at` to `to`: jmp (EB rel8 with short=true, else E9 rel32), call (E8), or a conditional
-    short jump such as jnz/jbe. Handles the signed displacement for you."""
+async def patch_diff(
+    original_path: str,
+    modified_path: str,
+    name: str,
+    game_code: Optional[str] = None,
+    dll_name: Optional[str] = None,
+    gap: int = 0,
+    pad: int = 0,
+) -> str:
+    """Turn the byte differences between two same-size binaries into a `memory` patch entry (JSON text): dataDisabled from
+    the original, dataEnabled from the modified file. `gap` merges runs closer than that many bytes; `pad` adds context bytes."""
+    from .patch import diff_entry, dump_entries
+
+    return dump_entries([diff_entry(original_path, modified_path, name=name, game_code=game_code, dll_name=dll_name, gap=gap, pad=pad)])
+
+
+@mcp.tool(annotations=READ)
+async def branch_encode(at: str, to: str, op: str = "jmp", short: bool = False, near: bool = False) -> str:
+    """Encode a branch at address `at` to `to`: jmp (EB rel8 with short=true, else E9 rel32), call (E8 rel32), or a conditional
+    jump such as jnz/jbe (2-byte short form; near=true gives 0F 8x rel32). Handles the signed displacement for you."""
     from .patch import asm
 
     src, dst = parse_hex(at), parse_hex(to)
     op_l = op.lower()
-    if op_l == "jmp":
-        enc = asm.jmp_short(src, dst) if short else asm.jmp_near(src, dst)
-    elif op_l == "call":
-        enc = bytes([0xE8]) + ((dst - (src + 5)) & 0xFFFFFFFF).to_bytes(4, "little")
-    else:
-        enc = asm.jcc_short(op_l, src, dst)
+    enc = asm.branch(op_l, src, dst, short=short, near=near)
     return f"{op_l} 0x{src:X} -> 0x{dst:X}: {enc.hex().upper()}"
 
 

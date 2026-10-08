@@ -34,7 +34,7 @@ def _entries():
                     {"offset": 0x608, "dllName": "x.dll", "dataDisabled": "758D", "dataEnabled": "9090"},
                 ],
             },
-            {"name": "Choice", "type": "union", "patches": []},
+            {"name": "Choice", "type": "mystery", "patches": []},  # unknown type: kept verbatim, skipped
         ]
     )
 
