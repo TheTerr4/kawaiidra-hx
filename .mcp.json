@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "kawaiidra-hx": {
-      "command": ".venv\\Scripts\\python.exe",
-      "args": ["-m", "kawaiidra_hx.mcp_server"],
+      "command": "uv",
+      "args": ["run", "--quiet", "khx", "mcp"],
       "env": {
         "GHIDRA_INSTALL_DIR": "${GHIDRA_INSTALL_DIR}"
       }

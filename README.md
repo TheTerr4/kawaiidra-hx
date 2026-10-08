@@ -12,6 +12,7 @@ What it adds on top of Ghidra:
 * **Signatures** (`khx sig`): the smallest unique, version-independent byte pattern around each patch site, with only the bytes that move wildcarded; checked on any number of builds.
 * **Function matching between builds** (`khx match`): strings, imports, constants, RTTI vtable slots, call graph and an order-aware alignment; carries the names you gave functions into the new build, reversibly.
 * **Porting patches to a new build** (`khx port`): signature, window ladder, string anchor and optional function matching, refusing rather than guessing.
+* **Triage** (`khx triage`): a no-Ghidra first look at any binary. **Patch sites** (`khx sites`): patch offsets as labels, bookmarks and comments in the listing. **Import ordinals** (`khx imports`): names for `Ordinal_N`.
 
 What it fixes compared with a subprocess-per-call design: one long-lived JVM (queries are milliseconds), imports and
 analysis as background jobs with live progress (no 300 s kill), read-only by default, large output offloaded to files,
@@ -50,8 +51,8 @@ uv run khx match mytarget old.dll new.dll --apply --dry-run             # carry 
 uv run khx port mytarget old.dll path/to/new.dll entry.json -o ported.json
 ```
 
-Claude Code: the repo's `.mcp.json` registers the server by calling the venv's Python directly (`GHIDRA_INSTALL_DIR` is
-taken from your environment).
+Claude Code: the repo's `.mcp.json` registers the server as `uv run --quiet khx mcp` (any OS; `GHIDRA_INSTALL_DIR` is
+taken from your environment). Run `uv sync` once first.
 Tools and the command language are listed in [docs/TOOLS.md](docs/TOOLS.md).
 
 ## Layout
@@ -64,6 +65,7 @@ src/kawaiidra_hx/
   annotate.py rename / comment (write mode)
   pe/         PE header math, tables, identity (no Ghidra)    patch/   JSON patch engine, signatures, branch encoding (no Ghidra)
   match/      function matching, alignment, name transfer     sigs.py  port.py   signatures and patch porting
+  triage.py   first look at any binary                        sites.py imports.py   patch-site annotation, import ordinals
   corpus.py   safe test-binary handling           mcp_server.py   MCP layer       cli.py   `khx`
 tests/        unit tests + golden tests replaying the original Q.java session
 docs/         LESSONS.md, TOOLS.md

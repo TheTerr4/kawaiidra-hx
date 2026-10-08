@@ -15,6 +15,7 @@ import io
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -24,6 +25,7 @@ from . import annotate, commands
 from .core import KhxError, ProgramHandle, get_session, list_projects
 from .core.jobs import get_jobs, import_program
 from .outputs import emit, slice_lines
+from .pe import PEImage
 from .queries import code, data, search
 from .util import parse_hex, parse_int
 
@@ -734,6 +736,96 @@ async def port_patches(
         return text
 
     return await _run("port_patches", work)
+
+
+@mcp.tool(annotations=READ)
+async def triage(file_path: str, game_code: str = "PE") -> str:
+    """A first look at any binary, from the file alone (no Ghidra): identity and build id, DLL/EXE and export count, sections with flags and
+    entropy (W+X and packed-looking ones flagged), data directories, relocations, exports, imports grouped by class (system / C++ runtime /
+    must ship with the program, ordinal-only imports flagged), PDB path, and embedded URLs, build paths, version and copyright strings.
+    A file that is not a PE image is described by its first bytes and entropy."""
+    from . import triage as _triage
+
+    return _triage.triage(file_path, game_code=game_code)
+
+
+@mcp.tool(annotations=WRITE)
+async def imports_resolve(
+    project: Optional[str] = None,
+    program: Optional[str] = None,
+    libs: Optional[list[str]] = None,
+    binary: Optional[str] = None,
+    skip_regex: Optional[str] = None,
+    dry_run: bool = True,
+    restore: bool = False,
+) -> str:
+    """Name the imports-by-ordinal of a program (`Ordinal_12`) from the export tables of the libraries shipped with the module: looked up in `libs`
+    (folders), next to `binary` and next to the file the program was imported from. `skip_regex` leaves exports with matching names alone (hashed
+    names). `dry_run` (the default) only reports; `restore=true` puts the `Ordinal_N` names back. Ghidra already resolves them if the library was in
+    the same folder at import time. Writes need save_program afterwards."""
+    from . import annotate, imports as _imports, sigs
+
+    def work() -> str:
+        h = _handle(project, program, write=not dry_run)
+        image = PEImage(sigs.original_bytes(h, binary))
+        found = _imports.resolve_ordinals(image, _imports.default_dirs(h, binary, [Path(d) for d in libs or []]), skip_regex=skip_regex)
+        text = _imports.format_resolution(found)
+        mapping = _imports.external_renames(found)
+        if dry_run or not mapping:
+            return text
+        counts = annotate.rename_externals(h, mapping, restore=restore)
+        return text + chr(10) + ("restored " if restore else "renamed ") + ", ".join(f"{v} {k}" for k, v in counts.items())
+
+    return await _run("imports_resolve", work)
+
+
+@mcp.tool(annotations=READ)
+async def list_patch_sites(
+    patch_files: list[str],
+    project: Optional[str] = None,
+    program: Optional[str] = None,
+    only: Optional[str] = None,
+    binary: Optional[str] = None,
+    game_code: Optional[str] = None,
+) -> str:
+    """The patch sites of patch JSON(s) for this program: file offset -> virtual address -> function, and whether the bytes in the program are the
+    original, the patched form, a union option, or neither (wrong build). Signature entries are resolved against `binary` (default: the file the
+    program was imported from). Read-only."""
+    from . import sites as _sites
+
+    def work() -> str:
+        h = _handle(project, program)
+        build_id, found, notes = _sites.build_context(h, patch_files, binary=binary, only=only, game_code=game_code)
+        return f"build {build_id}" + chr(10) + _sites.format_sites(_sites.resolve_sites(h, found), notes)
+
+    return await _run("list_patch_sites", work)
+
+
+@mcp.tool(annotations=WRITE)
+async def annotate_patch_sites(
+    patch_files: list[str],
+    project: Optional[str] = None,
+    program: Optional[str] = None,
+    only: Optional[str] = None,
+    binary: Optional[str] = None,
+    game_code: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = True,
+    clear: bool = False,
+) -> str:
+    """Put the patch sites into the program: a `patch_*` label, a `khx-patch` bookmark and a tagged comment at each site, and a plate comment on the
+    function that holds it. A site is annotated only if its bytes match what the patch file expects (`force` overrides); functions are never renamed;
+    re-running is idempotent. `dry_run` (the default) only reports; `clear=true` removes everything this tool wrote. Writes need save_program afterwards."""
+    from . import sites as _sites
+
+    def work() -> str:
+        h = _handle(project, program, write=not dry_run or clear)
+        if clear:
+            counts = _sites.clear_program(h)
+            return "removed " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items())
+        return _sites.annotate_program(h, patch_files, binary=binary, only=only, force=force, dry_run=dry_run, game_code=game_code).format()
+
+    return await _run("annotate_patch_sites", work)
 
 
 # --- entry point ------------------------------------------------------------------------------

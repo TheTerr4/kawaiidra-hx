@@ -272,7 +272,7 @@ def section_entropy(data: bytes, section: Section) -> float:
     for b in raw:
         counts[b] += 1
     n = len(raw)
-    return -sum((c / n) * math.log2(c / n) for c in counts if c)
+    return max(0.0, -sum((c / n) * math.log2(c / n) for c in counts if c))
 
 
 def iter_symbols(libs: list[ImportedLibrary]) -> Iterator[tuple[str, ImportedSymbol]]:

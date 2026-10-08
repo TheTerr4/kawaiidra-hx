@@ -13,7 +13,7 @@ from .conftest import build_pe
 RDATA_RVA, RDATA_RAW = 0x2000, 0xA00
 
 
-def build_pe_with_tables(*, is64: bool) -> bytes:
+def build_pe_with_tables(*, is64: bool, lib: bytes = b"KERNEL32.dll", ordinal: int = 5, export_base: int = 1) -> bytes:
     """.text + .rdata; .rdata carries export, import, base-reloc and debug data at fixed RVAs."""
     sections = [(".text", 0x1000, 0x400, 0x600, 0x400), (".rdata", RDATA_RVA, 0x800, RDATA_RAW, 0x800)]
     buf = bytearray(build_pe(is64=is64, image_base=0x180000000 if is64 else 0x10000000, entry_rva=0x1234, sections=sections, total_size=0x1200))
@@ -23,7 +23,7 @@ def build_pe_with_tables(*, is64: bool) -> bytes:
         buf[o : o + len(data)] = data
 
     # export directory @0x2000: module "mod.dll", ordinals 1..3: alpha, <forwarder>, gamma
-    put(0x2000, struct.pack("<IIHHIIIIIII", 0, 0x5C5C0000, 0, 0, 0x2100, 1, 3, 2, 0x2040, 0x2050, 0x2060))
+    put(0x2000, struct.pack("<IIHHIIIIIII", 0, 0x5C5C0000, 0, 0, 0x2100, export_base, 3, 2, 0x2040, 0x2050, 0x2060))
     put(0x2040, struct.pack("<III", 0x1010, 0x2130, 0x1020))
     put(0x2050, struct.pack("<II", 0x2110, 0x2118))
     put(0x2060, struct.pack("<HH", 0, 2))
@@ -36,13 +36,13 @@ def build_pe_with_tables(*, is64: bool) -> bytes:
     fmt = "<Q" if is64 else "<I"
     flag = 1 << (w * 8 - 1)
     put(0x2200, struct.pack("<IIIII", 0x2300, 0, 0, 0x2480, 0x2320) + struct.pack("<IIIII", 0x2340, 0, 0, 0x2490, 0x2360) + b"\0" * 20)
-    put(0x2300, struct.pack(fmt, 0x2400) + struct.pack(fmt, flag | 5) + struct.pack(fmt, 0))
-    put(0x2320, struct.pack(fmt, 0x2400) + struct.pack(fmt, flag | 5) + struct.pack(fmt, 0))
+    put(0x2300, struct.pack(fmt, 0x2400) + struct.pack(fmt, flag | ordinal) + struct.pack(fmt, 0))
+    put(0x2320, struct.pack(fmt, 0x2400) + struct.pack(fmt, flag | ordinal) + struct.pack(fmt, 0))
     put(0x2340, struct.pack(fmt, 0x2420) + struct.pack(fmt, 0))
     put(0x2360, struct.pack(fmt, 0x2420) + struct.pack(fmt, 0))
     put(0x2400, struct.pack("<H", 7) + b"ExitProcess\0")
     put(0x2420, struct.pack("<H", 1) + b"helper_init\0")
-    put(0x2480, b"KERNEL32.dll\0")
+    put(0x2480, lib + b"\0")
     put(0x2490, b"HELPER.dll\0")
     # base relocations @0x2500: page 0x1000, two real entries + one ABSOLUTE pad
     kind = 10 if is64 else 3

@@ -1,10 +1,10 @@
 {
   "_notes": "Copy to tests/reference.local.json (git-ignored) and fill in. Read in place, never copied. Tests marked `reference` skip without it. old_dll: 32-bit build (image base 0x10000000); new_dll: x64 build of the same DLL (image base 0x180000000); patched_dll and patch_json: the new build with the patch entry file applied; project_dir/project_name: a Ghidra project holding both builds under their file names, plus the Q.java golden .txt/.out files.",
-  "dir": "C:/path/to/reference-files",
+  "dir": "<folder holding the reference DLLs>",
   "old_dll": "old.dll",
   "new_dll": "new.dll",
   "patched_dll": "new_patched.dll",
   "patch_json": "entry.json",
-  "project_dir": "C:/path/to/reference-ghidra-project",
+  "project_dir": "<folder of the reference Ghidra project>",
   "project_name": "proj"
 }

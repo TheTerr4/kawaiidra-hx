@@ -24,9 +24,12 @@ exactly one program.
 | | `offset_to_va`, `va_to_offset` | header math for any PE on disk |
 | | `patch_show`, `patch_verify`, `patch_apply`, `patch_make`, `patch_diff`, `branch_encode` | JSON patch files (memory, union, number, signature, group); `patch_apply` writes a copy |
 | Signatures | `sig_make` (Ghidra), `sig_check` (no Ghidra) | synthesize version-independent `signature` entries for a binary's patch sites; resolve a signature file in any number of binaries |
+| Inspect (no Ghidra) | `triage` | a first look at any binary: identity, sections and entropy, exports, imports by class, debug info, embedded URLs/paths/versions; non-PE files described too |
 | Builds | `match_functions` (Ghidra) | match the functions of two analysed builds; the counterpart of an address, or a listing; fingerprints cached by file hash |
 | | `match_carry_names` (Ghidra, write) | carry hand-set function names to the matching functions of another build (dry run by default; `clear=true` undoes); persist with `save_program` |
 | | `port_patches` (Ghidra for the source) | carry a build's patches to another build's file: signature, window ladder, string anchor, optional function matching; nothing guessed |
+| Annotate | `list_patch_sites`, `annotate_patch_sites` (Ghidra) | patch-file offsets -> VA -> function; label + bookmark + tagged comments at each site (dry run by default, `clear` undoes) |
+| | `imports_resolve` (Ghidra) | name `Ordinal_N` imports from the export tables of the libraries shipped with the module (dry run by default, `restore` undoes) |
 
 Large results are saved under `workspace/results/` and truncated inline with the file path.
 
@@ -54,6 +57,10 @@ khx patch merge TARGET.json SOURCE.json [--replace]
 khx patch branch --at 0x1805D091B --to 0x1805D0990 --op jmp|call|jnz|... [--short | --near]
 khx sig make PROJECT PROGRAM PATCHFILE... [--binary FILE] [--only TEXT] [--max-bytes 48] [--min-fixed 12] [--no-usage] [-o OUT.json | --append-to FILE]
 khx sig check SIGFILE.json FILE...                               # no JVM: unique / ambiguous / not found per binary
+khx triage FILE...                                               # no JVM
+khx imports show FILE [--libs DIR]... [--skip-regex RX]          # no JVM: what each ordinal import would be named
+khx imports resolve PROJECT PROGRAM [--libs DIR]... [--skip-regex RX] [--binary FILE] [--restore] [--dry-run] [--no-save]
+khx sites list|annotate|clear PROJECT PROGRAM [PATCHFILE...] [--only TEXT] [--binary FILE] [--force] [--dry-run] [--no-save]
 khx match PROJECT SOURCE TARGET [--at ADDR]... [--list --limit N --only TEXT --named-only] [--json F] [--no-strings] [--refresh]
 khx match PROJECT SOURCE TARGET --apply [--dry-run] [--no-rename] [--force] [--min-score 0.7] [--min-margin 0.05] [--no-save]   # names -> target; --clear undoes
 khx port PROJECT SOURCE TARGET_FILE PATCHFILE... [-o OUT.json] [--allow-partial] [--no-ladder] [--min-agree 3] [--min-side 0] [--min-string 8] [--anchors --target-program NAME]
@@ -104,6 +111,15 @@ the signature made in the source (`khx sig`); windows leaning other ways around 
 holding the site matched between the builds (`--target-program` names the analysed target) with the patched instruction mapped inside it. The edit is re-applied to the *target's own bytes* (operands copied from the original
 instruction are re-derived), a jump edit is refused on a jump that goes the other way, a multi-site entry is emitted only if every site was found, and the emitted entries are verified against the target.
 
+### Patch sites and import ordinals
+
+`khx sites annotate` turns the file offsets of patch files into knowledge in the Ghidra listing: for each site a `patch_<entry>` label, a `khx-patch` bookmark and a tagged end-of-line comment with the entry, the bytes
+and the state they are in (original, patched, a union option), and a plate comment on the function that holds it. A site is annotated only when the program's bytes are what the patch file expects (`--force` to override);
+functions are never renamed (a label on an entry point would rename it, so those sites get the bookmark and comment only); re-running is idempotent and `clear` removes everything it wrote.
+
+`khx imports resolve` names `Ordinal_N` imports from the export tables of the libraries shipped with the module (`--libs`, next to the module, next to the imported file). Ghidra already does this when the library is in
+the same folder at import time; this is for the case where it was not. `--skip-regex` leaves hashed export names alone. Ghidra keeps the original imported name, so `--restore` puts `Ordinal_N` back.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -113,3 +129,7 @@ instruction are re-derived), a jump edit is refused on a jump that goes the othe
 | `KHX_DEFAULT_PROJECT` | `default` | used when `project` is omitted |
 | `KHX_MAX_INLINE_CHARS` | 20000 | larger output is saved to a file |
 | `KHX_DECOMPILE_TIMEOUT` | 120 | seconds per decompile |
+| `KHX_REF_CONFIG` | `tests/reference.local.json` | tests only: JSON naming private reference binaries and a Ghidra project (see `tests/reference.example.json`); tests marked `reference` skip without it |
+
+Nothing tracked in the repository depends on one machine: `tests/test_portability.py` fails on drive-letter paths, user names, home folders and OS-specific interpreter paths in any file git would commit.
+Where Ghidra and your binaries live is an argument or one of the variables above.

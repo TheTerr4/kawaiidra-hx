@@ -381,6 +381,87 @@ def cmd_port(args: argparse.Namespace) -> int:
     return 0 if rep.counts()["failed"] == 0 and rep.counts()["partial"] == 0 else 1
 
 
+# --- triage / imports / sites ---------------------------------------------------------------
+
+
+def cmd_triage(args: argparse.Namespace) -> int:
+    from . import triage
+
+    for i, f in enumerate(args.files):
+        if i:
+            print()
+        print(triage.triage(f, game_code=args.game))
+    return 0
+
+
+def cmd_imports(args: argparse.Namespace) -> int:
+    from . import imports as I
+    from .pe import PEImage
+
+    if args.action == "show":
+        libs = I.resolve_ordinals(PEImage(args.file), [Path(d) for d in args.libs or []] + [Path(args.file).parent], skip_regex=args.skip_regex)
+        print(I.format_resolution(libs))
+        return 0
+    from . import annotate, sigs
+    from .core import get_session
+
+    session = get_session()
+    session.ensure_started()
+    h = session.program(args.project, args.program, write=not args.dry_run)
+    image = PEImage(sigs.original_bytes(h, args.binary))
+    libs = I.resolve_ordinals(image, I.default_dirs(h, args.binary, [Path(d) for d in args.libs or []]), skip_regex=args.skip_regex)
+    print(I.format_resolution(libs))
+    mapping = I.external_renames(libs)
+    if args.dry_run or not mapping:
+        return 0
+    counts = annotate.rename_externals(h, mapping, restore=args.restore)
+    print(("restored " if args.restore else "renamed ") + ", ".join(f"{v} {k}" for k, v in counts.items()))
+    if not args.no_save:
+        h.save("khx imports")
+        print(f"saved {h.name}")
+    return 0
+
+
+def cmd_sites(args: argparse.Namespace) -> int:
+    from . import sites as S
+    from .core import get_session
+
+    session = get_session()
+    session.ensure_started()
+    writing = args.action == "clear" or (args.action == "annotate" and not args.dry_run)
+    h = session.program(args.project, args.program, write=writing)
+    if args.action == "list":
+        build_id, found, notes = S.build_context(h, args.patches, binary=args.binary, only=args.only, game_code=args.game)
+        print(f"build {build_id}")
+        print(S.format_sites(S.resolve_sites(h, found), notes))
+        return 0
+    if args.action == "clear":
+        counts = S.clear_program(h)
+        print("removed " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items()))
+    else:
+        rep = S.annotate_program(h, args.patches, binary=args.binary, only=args.only, force=args.force, dry_run=args.dry_run, game_code=args.game)
+        print(rep.format())
+        if args.dry_run:
+            return 0
+    if not args.no_save:
+        h.save("khx sites")
+        print(f"saved {h.name}")
+    else:
+        print("not saved (--no-save): changes live only in this process and are discarded at exit")
+    return 0
+
+
+def _imports_args(a: argparse.Namespace) -> argparse.Namespace:
+    """`khx imports show FILE` / `khx imports resolve PROJECT PROGRAM`: the positionals mean different things per action."""
+    if a.action == "show":
+        a.file = a.project_or_file
+    else:
+        if not a.program:
+            raise SystemExit("khx imports resolve needs PROJECT and PROGRAM")
+        a.project = a.project_or_file
+    return a
+
+
 def cmd_import(args: argparse.Namespace) -> int:
     from .core import get_session
     from .core.jobs import get_jobs, import_program
@@ -791,6 +872,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--anchors", action="store_true", help="last tier: match the function holding the site between the builds and map the instruction (both analysed)")
     p.add_argument("--target-program", help="with --anchors: the target as imported in the project")
     p.set_defaults(func=cmd_port)
+
+    # triage / imports / sites
+    p = sub.add_parser("triage", help="a JVM-free first look at any binary: identity, sections and entropy, exports, imports by class, debug info, embedded URLs/paths/versions")
+    p.add_argument("files", nargs="+", metavar="FILE")
+    p.add_argument("--game", default="PE", help="code for the build id line (default PE)")
+    p.set_defaults(func=cmd_triage)
+
+    p = sub.add_parser("imports", help="resolve imports-by-ordinal from the export tables of the libraries shipped next to the module")
+    p.add_argument("action", choices=["show", "resolve"], help="show FILE (no Ghidra) | resolve PROJECT PROGRAM (renames Ordinal_N externals in the program)")
+    p.add_argument("project_or_file", help="show: the module file; resolve: the project")
+    p.add_argument("program", nargs="?", help="resolve: the program name")
+    p.add_argument("--libs", action="append", metavar="DIR", help="extra folder(s) with the libraries (default: next to the module)")
+    p.add_argument("--skip-regex", help="leave exports whose name matches this regular expression alone (e.g. hashed names)")
+    p.add_argument("--binary", help="resolve: the file the program was imported from (default: the recorded path)")
+    p.add_argument("--restore", action="store_true", help="resolve: put the original Ordinal_N names back")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-save", action="store_true")
+    p.set_defaults(func=lambda a: cmd_imports(_imports_args(a)))
+
+    p = sub.add_parser("sites", help="put the offsets of patch files into a Ghidra program as labels, bookmarks and comments (list | annotate | clear)")
+    p.add_argument("action", choices=["list", "annotate", "clear"])
+    p.add_argument("project")
+    p.add_argument("program")
+    p.add_argument("patches", nargs="*", metavar="PATCHFILE", help="patch JSON(s) for this exact binary (list, annotate)")
+    p.add_argument("--only", help="only entries whose name contains this text")
+    p.add_argument("--binary", help="the file the program was imported from (needed to resolve signature entries)")
+    p.add_argument("--game", help="gameCode for the build id (default: the patch file's)")
+    p.add_argument("--force", action="store_true", help="annotate sites whose bytes match neither the original nor the patched form")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-save", action="store_true")
+    p.set_defaults(func=cmd_sites)
 
     # ghidra
     p = sub.add_parser("import", help="import (and analyze) a binary into a project; progress on stderr")

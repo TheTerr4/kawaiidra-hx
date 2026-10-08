@@ -45,7 +45,7 @@ def test_lists_expected_tools():
         "list_projects", "import_binary", "job_status", "program_info", "resolve", "decompile", "disassemble",
         "xrefs_to", "callers", "find_strings", "scan_instructions", "find_bytes", "query", "rename", "save_program",
         "pe_sections", "offset_to_va", "patch_verify", "patch_apply", "patch_make", "branch_encode",
-        "pe_identify", "pe_imports", "pe_exports", "patch_show", "patch_diff", "sig_make", "sig_check", "match_functions", "match_carry_names", "port_patches",
+        "pe_identify", "pe_imports", "pe_exports", "patch_show", "patch_diff", "sig_make", "sig_check", "match_functions", "match_carry_names", "port_patches", "triage", "imports_resolve", "list_patch_sites", "annotate_patch_sites",
     ):  # fmt: skip
         assert expected in names, expected
 
@@ -63,9 +63,10 @@ def test_patch_tools_need_no_ghidra(ref_new, ref_new_patched, ref_patch_json):
         imports = _text(await session.call_tool("pe_imports", {"file_path": str(ref_new)}))
         shown = _text(await session.call_tool("patch_show", {"patch_file": str(ref_patch_json)}))
         diff = _text(await session.call_tool("patch_diff", {"original_path": str(ref_new), "modified_path": str(ref_new_patched), "name": "all"}))
-        return sections, off, va, ver, br, ident, exports, imports, shown, diff
+        tri = _text(await session.call_tool("triage", {"file_path": str(ref_new)}))
+        return sections, off, va, ver, br, ident, exports, imports, shown, diff, tri
 
-    sections, off, va, ver, br, ident, exports, imports, shown, diff = asyncio.run(_with_session(go))
+    sections, off, va, ver, br, ident, exports, imports, shown, diff, tri = asyncio.run(_with_session(go))
     assert ".text" in sections and "0x180000000" in sections
     assert "VA 0x1805D0760" in off
     assert "file 0x5CFD60" in va
@@ -76,6 +77,7 @@ def test_patch_tools_need_no_ghidra(ref_new, ref_new_patched, ref_patch_json):
     assert "import(s)" in imports
     assert "[memory]" in shown
     assert '"dataEnabled"' in diff and '"dataDisabled"' in diff
+    assert tri.startswith("== triage:") and "build id" in tri and "sections:" in tri and "imports (library, count, class):" in tri
 
 
 @pytest.mark.ghidra
