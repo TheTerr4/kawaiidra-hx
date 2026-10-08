@@ -45,7 +45,7 @@ def test_lists_expected_tools():
         "list_projects", "import_binary", "job_status", "program_info", "resolve", "decompile", "disassemble",
         "xrefs_to", "callers", "find_strings", "scan_instructions", "find_bytes", "query", "rename", "save_program",
         "pe_sections", "offset_to_va", "patch_verify", "patch_apply", "patch_make", "branch_encode",
-        "pe_identify", "pe_imports", "pe_exports", "patch_show", "patch_diff",
+        "pe_identify", "pe_imports", "pe_exports", "patch_show", "patch_diff", "sig_make", "sig_check",
     ):  # fmt: skip
         assert expected in names, expected
 

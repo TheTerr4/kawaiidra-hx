@@ -574,6 +574,46 @@ async def branch_encode(at: str, to: str, op: str = "jmp", short: bool = False, 
     return f"{op_l} 0x{src:X} -> 0x{dst:X}: {enc.hex().upper()}"
 
 
+@mcp.tool(annotations=READ)
+async def sig_make(
+    patch_files: list[str],
+    project: Optional[str] = None,
+    program: Optional[str] = None,
+    binary: Optional[str] = None,
+    only: Optional[str] = None,
+    max_bytes: int = 48,
+    min_fixed: int = 12,
+    allow_usage: bool = True,
+    include_json: bool = False,
+) -> str:
+    """Synthesize version-independent `signature` patch entries for the memory patches of `patch_files` (patch JSON(s) for this
+    exact binary): the smallest masked byte pattern around each site that is unique in the file, with position-dependent operands
+    (relative branches, RIP-relative/absolute addresses, relocations) wildcarded, verified to resolve back to the exact site.
+    `binary` is the file the program was imported from (default: the path Ghidra recorded). Returns the per-site report;
+    include_json=true appends the patch file JSON. Read-only (writes nothing)."""
+    from . import sigs
+
+    def work() -> str:
+        h = _handle(project, program)
+        rep = sigs.make_signatures(h, patch_files, binary=binary, only=only, max_bytes=max_bytes, min_fixed=min_fixed, allow_usage=allow_usage)
+        text = rep.format()
+        if include_json and rep.patchfile is not None:
+            text += "\n\n" + rep.patchfile.dumps()
+        return text
+
+    return await _run("sig_make", work)
+
+
+@mcp.tool(annotations=READ)
+async def sig_check(patch_file: str, files: list[str]) -> str:
+    """Resolve every `signature` entry of a patch JSON in each binary and report where it lands (unique / ambiguous /
+    not found, file offset and VA). The test a signature patch has to survive when the binary is rebuilt. No Ghidra needed."""
+    from . import sigs
+    from .patch import load_patchfile
+
+    return sigs.check_signatures(load_patchfile(patch_file), files).format()
+
+
 # --- entry point ------------------------------------------------------------------------------
 
 

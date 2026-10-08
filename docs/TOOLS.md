@@ -23,6 +23,7 @@ exactly one program.
 | PE / patch (no Ghidra) | `pe_identify`, `pe_sections`, `pe_imports`, `pe_exports` | identity (sha256, timestamp, entry point, patch id), headers, import/export tables |
 | | `offset_to_va`, `va_to_offset` | header math for any PE on disk |
 | | `patch_show`, `patch_verify`, `patch_apply`, `patch_make`, `patch_diff`, `branch_encode` | JSON patch files (memory, union, number, signature, group); `patch_apply` writes a copy |
+| Signatures | `sig_make` (Ghidra), `sig_check` (no Ghidra) | synthesize version-independent `signature` entries for a binary's patch sites; resolve a signature file in any number of binaries |
 
 Large results are saved under `workspace/results/` and truncated inline with the file path.
 
@@ -48,6 +49,8 @@ khx patch make FILE --name N --edit va:0x1805D0760=B863000000C3 [--game ABC --dl
 khx patch diff ORIGINAL MODIFIED --name N [--gap N --pad N] [-o entry.json | --append-to patches.json]
 khx patch merge TARGET.json SOURCE.json [--replace]
 khx patch branch --at 0x1805D091B --to 0x1805D0990 --op jmp|call|jnz|... [--short | --near]
+khx sig make PROJECT PROGRAM PATCHFILE... [--binary FILE] [--only TEXT] [--max-bytes 48] [--min-fixed 12] [--no-usage] [-o OUT.json | --append-to FILE]
+khx sig check SIGFILE.json FILE...                               # no JVM: unique / ambiguous / not found per binary
 khx import FILE [-p PROJECT] [--name NAME|auto --game ABC] [--no-analyze] [--overwrite]      # progress on stderr, Ctrl-C cancels
 khx projects | khx programs [PROJECT]
 khx query PROJECT PROGRAM -c "decomp 0x..." -c "xrefs 0x..."  |  -f cmds.txt  |  < cmds.txt
@@ -63,6 +66,17 @@ JSON list of entries. Offsets are FILE offsets. Types: `memory` (toggle `dataDis
 unknown keys. A patch file named `{gameCode}-{TimeDateStamp:x}_{EntryRVA:x}.json` (or entries with `peIdentifier`) is only applied to that
 build: `verify`/`apply` fail with `WRONG_BUILD` otherwise (`--ignore-identity` to override). Unselected unions/numbers are skipped, never
 guessed. `apply`/`revert` always write a copy and abort before writing on any mismatch or overlap.
+
+### Signatures
+
+`khx sig make` turns the `memory` patches (and `union` windows) of a patch file into `signature` entries that survive a rebuild: it grows
+an instruction window around each site until the masked pattern is unique in the file, then shrinks what is not needed. Only
+position-dependent operand bytes are wildcarded (relative branch displacements, RIP-relative/absolute/IAT references from Ghidra's
+operand masks, and every byte covered by a base relocation); opcodes, register choices, struct offsets and small constants stay fixed.
+A signature must keep at least `--min-fixed` informative bytes (a wrong silent match is worse than no match) and is verified to resolve to
+exactly the site it was made from. Sites with no unique window are reported, never guessed; an ambiguous one is pinned by its n-th
+occurrence (`usage`) with a caution unless `--no-usage`. Sites inside incremental-link `jmp` thunk tables have no distinguishing bytes:
+sign the function body behind the thunk instead.
 
 ## Configuration
 

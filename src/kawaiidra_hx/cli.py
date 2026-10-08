@@ -248,6 +248,47 @@ def cmd_patch_branch(args: argparse.Namespace) -> int:
 # --- ghidra-backed ----------------------------------------------------------------------------
 
 
+# --- sig --------------------------------------------------------------------------------------
+
+
+def cmd_sig_make(args: argparse.Namespace) -> int:
+    from .core import get_session
+    from .patch import PatchFile, load_patchfile, merge_entries
+    from . import sigs
+
+    session = get_session()
+    session.ensure_started()
+    h = session.program(args.project, args.program)
+    rep = sigs.make_signatures(
+        h, args.patches, binary=args.binary, only=args.only, max_bytes=args.max_bytes, min_fixed=args.min_fixed,
+        allow_usage=not args.no_usage, game_code=args.game,
+    )  # fmt: skip
+    print(rep.format())
+    assert rep.patchfile is not None
+    if args.append_to:
+        target = Path(args.append_to)
+        pf = load_patchfile(target) if target.exists() else PatchFile(entries=[], headers=rep.patchfile.headers)
+        _pf, log = merge_entries(pf, rep.patchfile.entries, replace=args.replace)
+        target.write_text(pf.dumps(), encoding="utf-8")
+        print(f"\n{len(log)} entr{'y' if len(log) == 1 else 'ies'} written to {target}")
+    elif args.output:
+        out = Path(args.output)
+        if out.exists() and not args.overwrite:
+            raise SystemExit(f"{out} exists; use --append-to or --overwrite")
+        out.write_text(rep.patchfile.dumps(), encoding="utf-8")
+        print(f"\nwrote {out} ({len(rep.patchfile.entries)} entries)")
+    return 0 if rep.made == len(rep.rows) else 1
+
+
+def cmd_sig_check(args: argparse.Namespace) -> int:
+    from .patch import load_patchfile
+    from . import sigs
+
+    rep = sigs.check_signatures(load_patchfile(args.json), args.files)
+    print(rep.format())
+    return 0 if rep.ok or args.lenient else 1
+
+
 def cmd_import(args: argparse.Namespace) -> int:
     from .core import get_session
     from .core.jobs import get_jobs, import_program
@@ -586,6 +627,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--short", action="store_true", help="jmp: use the 2-byte rel8 form")
     p.add_argument("--near", action="store_true", help="conditional: use the 6-byte 0F 8x rel32 form")
     p.set_defaults(func=cmd_patch_branch)
+
+    # sig
+    sg = sub.add_parser("sig", help="version-independent signature patches (make: needs an analysed program; check: no JVM)").add_subparsers(dest="sig_cmd", required=True)
+    p = sg.add_parser("make", help="turn the memory patches of a patch file into signature entries (smallest unique masked pattern per site)")
+    p.add_argument("project")
+    p.add_argument("program")
+    p.add_argument("patches", nargs="+", metavar="PATCHFILE", help="patch JSON(s) for this exact binary")
+    p.add_argument("--binary", help="the file the program was imported from (default: the path Ghidra recorded; sha256 must match)")
+    p.add_argument("--only", help="only entries whose name contains this text")
+    p.add_argument("--game", help="gameCode to write into the entries (default: the patch file's)")
+    p.add_argument("--max-bytes", type=int, default=48, help="longest signature to try before escalating")
+    p.add_argument("--min-fixed", type=int, default=12, help="fewest fixed (non-wildcard) bytes a signature must keep")
+    p.add_argument("--no-usage", action="store_true", help="never pin an ambiguous signature by its n-th occurrence")
+    p.add_argument("-o", "--output", help="write the signature entries as a new patch file")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--append-to", metavar="JSON", help="add the entries to this patch file (created if missing)")
+    p.add_argument("--replace", action="store_true", help="with --append-to: replace entries of the same name")
+    p.set_defaults(func=cmd_sig_make)
+    p = sg.add_parser("check", help="where does each signature of a patch file land in these binaries?")
+    p.add_argument("json")
+    p.add_argument("files", nargs="+", metavar="FILE")
+    p.add_argument("--lenient", action="store_true", help="exit 0 even when a signature is ambiguous or not found")
+    p.set_defaults(func=cmd_sig_check)
 
     # ghidra
     p = sub.add_parser("import", help="import (and analyze) a binary into a project; progress on stderr")
