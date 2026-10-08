@@ -289,6 +289,98 @@ def cmd_sig_check(args: argparse.Namespace) -> int:
     return 0 if rep.ok or args.lenient else 1
 
 
+# --- match / port -----------------------------------------------------------------------------
+
+
+def _log_stderr(msg: str) -> None:
+    print(f"  {msg}", file=sys.stderr, flush=True)
+
+
+def _match_programs(args: argparse.Namespace, *, write_target: bool = False):
+    from .core import get_session
+    from .match import run
+
+    session = get_session()
+    session.ensure_started()
+    src = session.program(args.project, args.source)
+    dst = session.program(args.target_project or args.project, args.target, write=write_target)
+    res = run.compare(
+        src, dst, source_binary=args.source_binary, target_binary=args.target_binary, refresh=args.refresh,
+        kinds=("imports", "consts") if args.no_strings else None, log=_log_stderr,
+    )  # fmt: skip
+    return session, res
+
+
+def cmd_match(args: argparse.Namespace) -> int:
+    from .match import run, transfer
+
+    carrying = args.apply or args.clear or args.dry_run
+    session, res = _match_programs(args, write_target=bool(args.apply or args.clear))
+    print(run.summary(res))
+    if args.at:
+        print(run.counterparts(res, [parse_hex(a) for a in args.at]))
+    if args.json:
+        print(f"wrote {run.dump_json(res, args.json)} matches to {args.json}")
+    if args.list or not (args.at or args.json or carrying):
+        print(run.listing(res, limit=args.limit, only=args.only, named_only=args.named_only))
+    if args.clear:
+        print(transfer.clear_program(res.target))
+    if args.apply or args.dry_run:
+        carries = transfer.plan(res.matched, transfer.source_names(res.source), min_score=args.min_score, min_margin=args.min_margin)
+        print(f"{len(carries)} named function(s) of {res.source_label} have a match strong enough to carry")
+        rep = transfer.apply_carries(
+            res.target, carries, source_label=res.source_label, rename=not args.no_rename, force=args.force, dry_run=args.dry_run or not args.apply
+        )  # fmt: skip
+        print(rep.format())
+    if (args.apply or args.clear) and not args.dry_run and not args.no_save:
+        res.target.save("khx match")
+        print(f"{res.target.name} saved")
+    return 0
+
+
+def cmd_port(args: argparse.Namespace) -> int:
+    from .core import get_session
+    from . import sigs
+    from .match.anchors import AnchorContext
+    from .match.store import FingerprintStore
+    from .pe import PEImage
+    from .port import port_build
+
+    session = get_session()
+    session.ensure_started()
+    h = session.program(args.project, args.source)
+    img = PEImage(args.target_file)
+    made = sigs.make_signatures(
+        h, args.patches, binary=args.source_binary, only=args.only, max_bytes=args.max_bytes, min_fixed=args.min_fixed,
+        allow_usage=not args.no_usage, game_code=args.game,
+    )  # fmt: skip
+    code = made.build_id.split("-", 1)[0]
+    to_id = img.identity.pe_identifier(code)
+    if made.build_id == to_id:
+        raise SystemExit(f"source and target are the same build ({to_id})")
+    ctx = None
+    if args.anchors:
+        if not args.target_program:
+            raise SystemExit("--anchors needs --target-program: the name of the target as imported in the project (the matcher reads its Ghidra analysis)")
+        store = FingerprintStore(refresh=args.refresh, log=_log_stderr)
+        dst = session.program(args.target_project or args.project, args.target_program)
+        a, b = store.index(h, args.source_binary), store.index(dst, args.target_file)
+        ctx = AnchorContext(a, b, PEImage(sigs.original_bytes(h, args.source_binary)), img, cache=store.dir / f"align_{a.build_id}_{b.build_id}.pkl", log=lambda m: _log_stderr(f"align: {m}"))
+    rep = port_build(
+        made, img, to_id, game_code=code, use_ladder=not args.no_ladder, min_agree=args.min_agree, min_side=args.min_side,
+        min_string=args.min_string, allow_partial=args.allow_partial, anchors=ctx,
+    )  # fmt: skip
+    print(rep.format())
+    assert rep.patchfile is not None
+    if args.output:
+        out = Path(args.output)
+        if out.exists() and not args.overwrite:
+            raise SystemExit(f"{out} exists; use --overwrite")
+        out.write_text(rep.patchfile.dumps(), encoding="utf-8")
+        print(f"wrote {out}  (name it {to_id}.<label>.json so verify/apply check the build)")
+    return 0 if rep.counts()["failed"] == 0 and rep.counts()["partial"] == 0 else 1
+
+
 def cmd_import(args: argparse.Namespace) -> int:
     from .core import get_session
     from .core.jobs import get_jobs, import_program
@@ -650,6 +742,55 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("files", nargs="+", metavar="FILE")
     p.add_argument("--lenient", action="store_true", help="exit 0 even when a signature is ambiguous or not found")
     p.set_defaults(func=cmd_sig_check)
+
+    # match / port
+    def program_pair_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("project")
+        p.add_argument("source", help="program name in PROJECT: the build you know")
+        p.add_argument("--target-project", help="project holding the target program (default: PROJECT)")
+        p.add_argument("--source-binary", help="the file the source program was imported from (default: the path Ghidra recorded; sha256 must match)")
+        p.add_argument("--refresh", action="store_true", help="re-extract fingerprints and recompute the alignment instead of using the cache")
+
+    p = sub.add_parser("match", help="match the functions of two analysed builds (strings, imports, constants, call graph, RTTI, order); optionally carry names across")
+    program_pair_args(p)
+    p.add_argument("target", help="program name in the target project: the build you want to understand")
+    p.add_argument("--target-binary", help="the file the target program was imported from (default: the recorded path)")
+    p.add_argument("--at", action="append", metavar="ADDR", help="print the counterpart of the function holding this source address (repeatable)")
+    p.add_argument("--list", action="store_true", help="list matches (the default when nothing else is asked for)")
+    p.add_argument("--limit", type=int, default=40, help="rows to list (0 = all)")
+    p.add_argument("--only", help="list only functions whose source name contains this text")
+    p.add_argument("--named-only", action="store_true", help="list only functions that have a real name in the source")
+    p.add_argument("--json", metavar="FILE", help="write every match as JSON")
+    p.add_argument("--no-strings", action="store_true", help="ignore string literals (to see how well the code alone matches)")
+    p.add_argument("--apply", action="store_true", help="carry hand-set function names of the source into the target: tagged comment + bookmark, rename of default-named functions")
+    p.add_argument("--dry-run", action="store_true", help="show what --apply would do")
+    p.add_argument("--clear", action="store_true", help="undo --apply: remove the tagged comments and bookmarks, give the old names back")
+    p.add_argument("--no-rename", action="store_true", help="with --apply: comments and bookmarks only, no renames")
+    p.add_argument("--force", action="store_true", help="with --apply: also rename functions that already have a real name")
+    p.add_argument("--min-score", type=float, default=0.7, help="with --apply: least similarity of an alignment match to carry")
+    p.add_argument("--min-margin", type=float, default=0.05, help="with --apply: least lead over the runner-up of an alignment match")
+    p.add_argument("--no-save", action="store_true", help="with --apply/--clear: leave the change unsaved")
+    p.set_defaults(func=cmd_match)
+
+    p = sub.add_parser("port", help="carry the patches of one analysed build to another build's file (signature, window ladder, string, optional function matching)")
+    program_pair_args(p)
+    p.add_argument("target_file", help="the target build's file (no Ghidra needed for it, unless --anchors)")
+    p.add_argument("patches", nargs="+", metavar="PATCHFILE", help="patch JSON(s) for the source build")
+    p.add_argument("--only", help="only entries whose name contains this text")
+    p.add_argument("--game", help="gameCode for the emitted entries (default: the patch file's)")
+    p.add_argument("-o", "--output", help="write the ported entries as a patch file")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--allow-partial", action="store_true", help="emit entries with only some sites found, flagged PARTIAL PORT in their caution")
+    p.add_argument("--no-ladder", action="store_true", help="do not try windows leaning other ways around a site")
+    p.add_argument("--min-agree", type=int, default=3, help="windows that must agree on one place for a ladder result")
+    p.add_argument("--min-side", type=int, default=0, help="informative bytes some agreeing window needs on each side of the site")
+    p.add_argument("--min-string", type=int, default=8, help="shortest string a data patch may be anchored by (0 = off)")
+    p.add_argument("--max-bytes", type=int, default=48)
+    p.add_argument("--min-fixed", type=int, default=12)
+    p.add_argument("--no-usage", action="store_true")
+    p.add_argument("--anchors", action="store_true", help="last tier: match the function holding the site between the builds and map the instruction (both analysed)")
+    p.add_argument("--target-program", help="with --anchors: the target as imported in the project")
+    p.set_defaults(func=cmd_port)
 
     # ghidra
     p = sub.add_parser("import", help="import (and analyze) a binary into a project; progress on stderr")

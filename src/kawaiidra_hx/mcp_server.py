@@ -614,6 +614,128 @@ async def sig_check(patch_file: str, files: list[str]) -> str:
     return sigs.check_signatures(load_patchfile(patch_file), files).format()
 
 
+def _target_handle(project: Optional[str], target_project: Optional[str], program: str, write: bool = False):
+    return get_session().program(target_project or project, program, write=write)
+
+
+@mcp.tool(annotations=READ)
+async def match_functions(
+    source: str,
+    target: str,
+    project: Optional[str] = None,
+    target_project: Optional[str] = None,
+    addresses: Optional[list[str]] = None,
+    only: Optional[str] = None,
+    named_only: bool = False,
+    limit: int = 40,
+    no_strings: bool = False,
+    refresh: bool = False,
+) -> str:
+    """Match the functions of two analysed builds of a binary (`source` = the one you know, `target` = the new one; both programs in
+    `project`, or `target_project`) through unique strings, imports, constants, RTTI vtable slots, the call graph and the order the
+    functions sit in the image. Pass `addresses` (any address inside a source function) to get each one's counterpart with the evidence
+    (method, similarity, margin) or, when there is none, the candidates between its neighbours' counterparts. Without addresses it
+    summarises and lists matches (`only` filters by source name, `named_only` skips unnamed functions). Fingerprints are cached by file
+    hash, so only the first call per binary is slow. Read-only."""
+    from .match import run
+
+    def work() -> str:
+        a = _handle(project, source)
+        b = _target_handle(project, target_project, target)
+        res = run.compare(a, b, refresh=refresh, kinds=("imports", "consts") if no_strings else None)
+        out = [run.summary(res)]
+        if addresses:
+            out.append(run.counterparts(res, [parse_hex(x) for x in addresses]))
+        else:
+            out.append(run.listing(res, limit=limit, only=only, named_only=named_only))
+        return chr(10).join(out)
+
+    return await _run("match_functions", work)
+
+
+@mcp.tool(annotations=WRITE)
+async def match_carry_names(
+    source: str,
+    target: str,
+    project: Optional[str] = None,
+    target_project: Optional[str] = None,
+    dry_run: bool = True,
+    rename: bool = True,
+    force: bool = False,
+    clear: bool = False,
+    min_score: float = 0.7,
+    min_margin: float = 0.05,
+) -> str:
+    """Carry the names you gave functions in the `source` program to their counterparts in the `target` program: a tagged plate comment and a
+    `khx-match` bookmark on each, and a rename when the target function still has its default FUN_ name (`force` renames others too; `rename=false`
+    leaves names alone). `dry_run` (the default) only reports. `clear=true` undoes an earlier run (removes the tags, gives the old names back).
+    Strong evidence (unique strings, rare features, RTTI slots) always counts; an alignment match needs `min_score` and `min_margin`.
+    Writes need save_program afterwards."""
+    from .match import run, transfer
+
+    def work() -> str:
+        a = _handle(project, source)
+        b = _target_handle(project, target_project, target, write=not dry_run or clear)
+        if clear:
+            return str(transfer.clear_program(b))
+        res = run.compare(a, b)
+        carries = transfer.plan(res.matched, transfer.source_names(a), min_score=min_score, min_margin=min_margin)
+        rep = transfer.apply_carries(b, carries, source_label=a.name, rename=rename, force=force, dry_run=dry_run)
+        return run.summary(res) + chr(10) + f"{len(carries)} named function(s) have a match strong enough to carry" + chr(10) + rep.format()
+
+    return await _run("match_carry_names", work)
+
+
+@mcp.tool(annotations=READ)
+async def port_patches(
+    source: str,
+    target_file: str,
+    patch_files: list[str],
+    project: Optional[str] = None,
+    source_binary: Optional[str] = None,
+    only: Optional[str] = None,
+    allow_partial: bool = False,
+    anchors: bool = False,
+    target_program: Optional[str] = None,
+    target_project: Optional[str] = None,
+    include_json: bool = False,
+) -> str:
+    """Carry the patches of an analysed build (`source`, with `patch_files` written for it) to another build's file (`target_file`): per site the
+    signature made in the source, windows leaning other ways around it, the string a data patch edits, and with `anchors=true` (both builds analysed;
+    `target_program` names the target in the project) the function holding the site matched between the builds. Nothing is guessed: a site is ported
+    only when the evidence is unique, a multi-site entry only when every site was found (`allow_partial` to emit the rest, flagged), and the result is
+    verified against the target. The target needs no Ghidra without `anchors`. Returns the report; `include_json=true` appends the patch file JSON."""
+    from . import sigs
+    from .match.anchors import AnchorContext
+    from .match.store import FingerprintStore
+    from .pe import PEImage
+    from .port import port_build
+
+    def work() -> str:
+        h = _handle(project, source)
+        img = PEImage(target_file)
+        made = sigs.make_signatures(h, patch_files, binary=source_binary, only=only)
+        code = made.build_id.split("-", 1)[0]
+        to_id = img.identity.pe_identifier(code)
+        if made.build_id == to_id:
+            raise KhxError(f"source and target are the same build ({to_id})")
+        ctx = None
+        if anchors:
+            if not target_program:
+                raise KhxError("anchors=true needs target_program: the target as imported in the project")
+            store = FingerprintStore()
+            dst = _target_handle(project, target_project, target_program)
+            a, b = store.index(h, source_binary), store.index(dst, target_file)
+            ctx = AnchorContext(a, b, PEImage(sigs.original_bytes(h, source_binary)), img, cache=store.dir / f"align_{a.build_id}_{b.build_id}.pkl")
+        rep = port_build(made, img, to_id, game_code=code, allow_partial=allow_partial, anchors=ctx)
+        text = rep.format()
+        if include_json and rep.patchfile is not None:
+            text += chr(10) * 2 + rep.patchfile.dumps()
+        return text
+
+    return await _run("port_patches", work)
+
+
 # --- entry point ------------------------------------------------------------------------------
 
 

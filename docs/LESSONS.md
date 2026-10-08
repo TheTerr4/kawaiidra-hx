@@ -104,3 +104,57 @@ tool and `khx query`.
   through an environment variable.
 * Imports of the three corpus binaries (1.7-3.3 MB) took ~100 s of analysis each; our PE offset math and Ghidra's agreed
   on all of them.
+
+## Signatures, function matching and porting patches between builds
+
+What to know before trusting `khx sig`, `khx match` and `khx port`, and why they refuse more often than a first version would.
+
+### Signatures
+
+* **Which bytes move.** Ghidra's `InstructionPrototype.getOperandValueMask(i)` gives the bit range of every operand, and the operand carries its references.
+  Wildcard the bytes *wholly covered* by operands that are flow (rel8/rel32 jump and call) or memory references that are not stack references (RIP-relative, absolute,
+  IAT slots); keep opcode/ModRM bits, struct displacements, stack offsets and scalar immediates. On x86 also merge the PE base-relocation table (tens of thousands of
+  HIGHLOW entries). Partial-bit masks (ModRM) are never wildcarded.
+* **Minimal is not safest.** A signature that is unique by 6 bytes can silently match the wrong place in a rebuilt binary; "no match" is the safe failure. The default is
+  >= 12 *informative* bytes, where alignment padding (`00`/`CC` in data, NOP/INT3 in code) and wildcards weigh nothing.
+* **Incremental-link jump thunks have no identity.** A DLL built with incremental linking starts with a table of `jmp rel32` stubs; every neighbour of a stub is the same
+  `E9 ????????`, so no unique window exists. `khx sig make` reports it; sign the function body behind the thunk.
+* **The window ladder.** One signature is the smallest window around the site; when *its* neighbours change, a window leaning the other way still holds. Generate the frontier of
+  minimal windows (for every left extent the smallest right extent that is informative and unique, and vice versa), keep those unique in both builds, and require every window that
+  matches the target to agree on the location.
+* **k agreeing windows is not k pieces of evidence.** The windows of a ladder are nested (they all contain the site and most of the same neighbours), so they agree trivially. The check that caught
+  wrong ports was semantic: an edit on a jump must land on a jump that goes the same way (a loop-closing `jnz` is not a skip-ahead `jnz`). Prefer one cheap semantic invariant to a bigger vote.
+* **A patch window is not the instruction.** Windows are often a single opcode byte (`75` -> `EB`); whatever decides whether the edit is safe (the jump displacement) lies outside it. A sanity check on
+  an edit has to read the file around the window, on both builds.
+* **Re-derive copied operands.** An edit that rewrites an instruction can copy an operand of the original into new code (`mov eax,[ebx+0x2c4]` -> `mov [ebx+0x2c4],eax`). That operand is a build-specific value:
+  take it from the target's own bytes (`port.carry_copies`), not from the source's edit.
+* **A synthetic test function must be fully reachable.** Ghidra only disassembles what flow reaches: an instruction skipped by an unconditional jump is never decoded, so the instruction map (and every
+  window) stops there.
+
+### Function matching
+
+* **Look at the shape of the data before choosing the algorithm.** Features alone (strings, constants, skeletons, call graph) match few functions. But functions of one translation unit sit next to each other in
+  source order, and that order mostly survives a rebuild. A function with nothing of its own is then "between its neighbours that do have an anchor": alignment between anchors (BinDiff's "address sequence" step)
+  recovers far more than any feature does, with no new feature.
+* **Look at what the binary already names.** C++ binaries carry RTTI, and Ghidra labels every `<Class>::vftable`. `(class, vtable, slot)` identifies a virtual function with no string or constant of its own and is the cheapest anchor there is.
+  A size-ratio gate on the pair removes nearly all wrong slot pairs (tables whose slots were reordered pair functions of wildly different size).
+* **An evaluation can leak through the similarity function, not only through the seeds.** Withholding strings from the seeds while letting the similarity compare string sets lets every string-anchored test pair partly
+  score itself. Anything a metric is built from has to be switchable (`khx match --no-strings`).
+* **Similarity scales are not portable across ISAs.** The threshold that is right between two builds of one ISA finds almost nothing between x86 and x64, where sizes, skeletons and call counts differ. A lower threshold plus
+  a margin rule (the runner-up must be clearly behind) works, but it also makes mistakes: across ISAs a match is a *hint* (a named function and a shortlist), never an edit.
+* **Repeated blocks and near-duplicates cannot be told apart by alignment.** If the same few instructions occur twice in the target function and the source had a different number of copies, the tool refuses.
+* **Measured on the corpus** (`tests/test_match.py`: the x86 and x64 builds of the same SQLite release are one source tree built twice, so symbol names are ground truth): 46% of the x86 functions are matched
+  to an x64 function (alignment 1700, call-graph propagation 984, rare-feature seeds 438, RTTI slots 25, unique strings 2); of the matches where both sides carry a real name, 87% agree after undoing x86 name decoration
+  (alignment 84%, propagation 91%, seeds and vtable slots 100%). Many of the disagreements are the same function under another name (`FID_conflict:` aliases, renamed CRT helpers), so this is a lower bound.
+
+### Porting and annotating
+
+* **Signatures first, function matching last.** A silent wrong match is worse than a clear "not found": signatures hold between adjacent builds (same compiler, moved offsets); alignment makes function matching good enough
+  within one generation to serve as the last tier, and across a change of ISA it only names the function.
+* **"Agrees" (same place) is not "same edit".** A port can land on the right window and still write a wrong value if the value is build-specific. `khx port` reports caution text and verifies the result against the target.
+* **Idempotent, reversible annotation.** Everything `khx match --apply` writes is tagged, re-running it never duplicates, and the old name *and its Ghidra source type* are recorded with the new one (`was=... src=...`) so `--clear`
+  gives back exactly what was there. Re-applying must carry the recorded name forward, or a later `--clear` cannot restore it.
+* **Ghidra gotchas.** A label created on a function's entry point renames the function. `Symbol.setSource(DEFAULT)` is not allowed; restore a default name with `function.setName(None, SourceType.DEFAULT)`. Bookmarks are unique per
+  (address, type, category), so several sites in one instruction must share one bookmark text.
+* **Tooling.** A `\0` or `\x90` or `\n` written through a shell heredoc can lose a backslash level and end up as a NUL or a real newline in the source. Write files that contain backslashes with a file-editing tool, and check
+  the syntax (`ast.parse`) before writing, not after.

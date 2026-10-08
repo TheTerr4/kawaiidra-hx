@@ -24,6 +24,9 @@ exactly one program.
 | | `offset_to_va`, `va_to_offset` | header math for any PE on disk |
 | | `patch_show`, `patch_verify`, `patch_apply`, `patch_make`, `patch_diff`, `branch_encode` | JSON patch files (memory, union, number, signature, group); `patch_apply` writes a copy |
 | Signatures | `sig_make` (Ghidra), `sig_check` (no Ghidra) | synthesize version-independent `signature` entries for a binary's patch sites; resolve a signature file in any number of binaries |
+| Builds | `match_functions` (Ghidra) | match the functions of two analysed builds; the counterpart of an address, or a listing; fingerprints cached by file hash |
+| | `match_carry_names` (Ghidra, write) | carry hand-set function names to the matching functions of another build (dry run by default; `clear=true` undoes); persist with `save_program` |
+| | `port_patches` (Ghidra for the source) | carry a build's patches to another build's file: signature, window ladder, string anchor, optional function matching; nothing guessed |
 
 Large results are saved under `workspace/results/` and truncated inline with the file path.
 
@@ -51,6 +54,9 @@ khx patch merge TARGET.json SOURCE.json [--replace]
 khx patch branch --at 0x1805D091B --to 0x1805D0990 --op jmp|call|jnz|... [--short | --near]
 khx sig make PROJECT PROGRAM PATCHFILE... [--binary FILE] [--only TEXT] [--max-bytes 48] [--min-fixed 12] [--no-usage] [-o OUT.json | --append-to FILE]
 khx sig check SIGFILE.json FILE...                               # no JVM: unique / ambiguous / not found per binary
+khx match PROJECT SOURCE TARGET [--at ADDR]... [--list --limit N --only TEXT --named-only] [--json F] [--no-strings] [--refresh]
+khx match PROJECT SOURCE TARGET --apply [--dry-run] [--no-rename] [--force] [--min-score 0.7] [--min-margin 0.05] [--no-save]   # names -> target; --clear undoes
+khx port PROJECT SOURCE TARGET_FILE PATCHFILE... [-o OUT.json] [--allow-partial] [--no-ladder] [--min-agree 3] [--min-side 0] [--min-string 8] [--anchors --target-program NAME]
 khx import FILE [-p PROJECT] [--name NAME|auto --game ABC] [--no-analyze] [--overwrite]      # progress on stderr, Ctrl-C cancels
 khx projects | khx programs [PROJECT]
 khx query PROJECT PROGRAM -c "decomp 0x..." -c "xrefs 0x..."  |  -f cmds.txt  |  < cmds.txt
@@ -77,6 +83,26 @@ A signature must keep at least `--min-fixed` informative bytes (a wrong silent m
 exactly the site it was made from. Sites with no unique window are reported, never guessed; an ambiguous one is pinned by its n-th
 occurrence (`usage`) with a caution unless `--no-usage`. Sites inside incremental-link `jmp` thunk tables have no distinguishing bytes:
 sign the function body behind the thunk instead.
+
+### Matching functions between two builds (`khx match`)
+
+SOURCE and TARGET are programs of an analysed project (`--target-project` if the target lives elsewhere), e.g. two releases of one DLL. Each is fingerprinted once (strings, imports by name or ordinal,
+large constants, an instruction skeleton, ordered callees, an instruction stream; RTTI vtables from `<Class>::vftable` labels) and cached under `<workspace>/cache` by the sha256 of the original file, so
+later runs need no Ghidra work for fingerprinting. The functions are then matched in stages: seeds from rare shared features (accepted only when mutual best by a clear margin), unique strings, RTTI
+vtable slots, call-graph propagation, and an order-aware alignment between the anchors found so far (similarity of size, constants, strings, imports, skeleton and callee agreement; a pair with an equally good
+rival is reported as unmatched, never guessed). `--at ADDR` prints the counterpart of the function holding an address with its evidence, or the candidates between its neighbours' counterparts.
+Across different ISAs the similarity bar is lower and a result is a hint.
+
+`--apply` carries the names you gave functions by hand (Ghidra source *User defined*) from the source program into the target as a tagged plate comment (`[khx-match:Name] ...`) and a `khx-match` bookmark, and renames the
+target function when it still has its default `FUN_` name (`--force` for others, `--no-rename` for comments only). Strong evidence (unique strings, rare features, RTTI slots) always counts; an alignment match needs
+`--min-score` and `--min-margin`. `--dry-run` shows the plan; `--clear` removes the tags and gives the old names back. Re-running is idempotent.
+
+### Porting patches between builds (`khx port`)
+
+`khx port PROJECT SOURCE TARGET_FILE PATCHFILE...` takes patch files written for the analysed SOURCE build and produces the patch entries for the build in TARGET_FILE, which needs no Ghidra project. Tiers, in order:
+the signature made in the source (`khx sig`); windows leaning other ways around the site (each unique in both builds, `--min-agree` of them agreeing); the NUL-delimited string a data patch edits; and with `--anchors` the function
+holding the site matched between the builds (`--target-program` names the analysed target) with the patched instruction mapped inside it. The edit is re-applied to the *target's own bytes* (operands copied from the original
+instruction are re-derived), a jump edit is refused on a jump that goes the other way, a multi-site entry is emitted only if every site was found, and the emitted entries are verified against the target.
 
 ## Configuration
 
